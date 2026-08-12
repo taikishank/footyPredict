@@ -1,0 +1,25 @@
+temp.txt
+.env
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Node / Angular 
+node_modules/
+dist/
+.angular/
+
+# Python venv 
+inference-py/bin/
+inference-py/lib/
+inference-py/lib64
+inference-py/include/
+inference-py/pyvenv.cfg
