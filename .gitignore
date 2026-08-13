@@ -17,9 +17,18 @@ node_modules/
 dist/
 .angular/
 
-# Python venv 
+# Python venv
 inference-py/bin/
 inference-py/lib/
 inference-py/lib64
 inference-py/include/
+inference-py/share/
 inference-py/pyvenv.cfg
+
+# ML artifacts (models/ is S3-backed, data/ is a local cache of pulled API data)
+ml/models/
+ml/data/
+ml/mlruns/
+
+# Claude
+.claude

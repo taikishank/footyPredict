@@ -1,0 +1,6 @@
+SM league id    |   SM 2025 season id   |   raw name
+8                   25583                   Premier league
+82                  25646                   Bundesliga
+301                 25651                   Ligue 1
+384                 25533                   Serie A
+564                 25659                   La Liga

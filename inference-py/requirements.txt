@@ -1,3 +1,10 @@
 xgboost
 fastapi
 scikit-learn
+pandas
+requests
+python-dotenv
+boto3
+joblib
+matplotlib
+mlflow
