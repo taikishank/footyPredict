@@ -5,10 +5,10 @@ import pandas as pd
 
 RAW_DIR = Path(__file__).parent / "data" / "raw"
 FEATURES_DIR = Path(__file__).parent / "data" / "features"
-OUT_PATH = FEATURES_DIR / "all_leagues_features_removed_tackles.csv"
+OUT_PATH = FEATURES_DIR / "2000_window5_8.csv"
 
-MIN_WINDOW = 3
-MAX_WINDOW = 5
+MIN_WINDOW = 5
+MAX_WINDOW = 8
 
 FINAL_SCORE_TYPE_ID = 1525
 GOALS_STAT_TYPE_ID = 52
@@ -48,7 +48,7 @@ def extract_team_stats(fixture: dict, participant_id: int) -> dict:
         if entry["participant_id"] != participant_id:
             continue
         name = STAT_IDS.get(entry["type_id"])
-        if name is not None:
+        if name is not None and entry["data"]["value"] is not None:
             stats[name] = entry["data"]["value"]
 
     stats["shot_pct"] = (
@@ -80,6 +80,10 @@ def parse_fixture(fixture: dict) -> dict:
             for s in fixture["statistics"]
             if s["type_id"] == GOALS_STAT_TYPE_ID
         }
+        if home["id"] not in goals_by_participant or away["id"] not in goals_by_participant:
+            # Fixture hasn't been played yet (or was postponed/cancelled) -
+            # no result to train on, so skip it.
+            return None
         home_goals = goals_by_participant[home["id"]]
         away_goals = goals_by_participant[away["id"]]
 
@@ -107,9 +111,14 @@ def parse_fixture(fixture: dict) -> dict:
 
 
 def load_fixtures() -> list[dict]:
-    # RAW_DIR holds one subdirectory per league (raw/premier_league/*.json,
-    # raw/la_liga/*.json, ...) - glob across all of them.
-    fixtures = [parse_fixture(json.loads(p.read_text())) for p in RAW_DIR.glob("*/*.json")]
+    # raw/all_fixtures/*.json now covers the full subscription - the old
+    # per-league raw dirs are a subset of it, so reading only this one
+    # avoids double-counting fixtures that exist in both.
+    fixtures = [
+        parsed
+        for p in (RAW_DIR / "all_fixtures").glob("*.json")
+        if (parsed := parse_fixture(json.loads(p.read_text()))) is not None
+    ]
     fixtures.sort(key=lambda f: f["date"])
     return fixtures
 

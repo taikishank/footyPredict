@@ -13,7 +13,7 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import log_loss
 from xgboost import XGBClassifier
 
-FEATURES_PATH = Path(__file__).parent / "data" / "features" / "all_leagues_features_removed_interceptions.csv"
+FEATURES_PATH = Path(__file__).parent / "data" / "features" / "2000_window5_8.csv"
 CALIBRATION_PLOT_PATH = Path(__file__).parent / "models" / "calibration_curve.png"
 MODEL_LOCAL_PATH = Path(__file__).parent / "models" / "match_outcome_model.json"
 
@@ -28,9 +28,9 @@ LABEL_MAP = {"home_win": 0, "draw": 1, "away_win": 2}
 
 # Hyperparameters live here - edit these between runs, MLflow logs whatever
 # values were actually used so nothing needs to go in a filename anymore.
-N_ESTIMATORS = 150
-MAX_DEPTH = 5
-LEARNING_RATE = 0.0078
+N_ESTIMATORS = 800
+MAX_DEPTH = 4
+LEARNING_RATE = 0.0072
 
 
 def brier_score_multiclass(y_true: np.ndarray, probs: np.ndarray, n_classes: int) -> float:
@@ -101,16 +101,13 @@ def main() -> None:
         calibration_path = plot_calibration(y_val, probs)
         mlflow.log_artifact(str(calibration_path))
 
-        mlflow.xgboost.log_model(model, name="removed_interceptions_model")
+        mlflow.xgboost.log_model(model, name="window5_8")
 
         run_id = mlflow.active_run().info.run_id
         MODEL_LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(MODEL_LOCAL_PATH))
 
-        # TODO(human): decide the S3 key naming/versioning scheme for this artifact
-        # and assign it to `s3_key` below. You have `run_id`, `loss`, and `brier`
-        # available here if you want any of them baked into the key.
-        s3_key = "no_interceptions_v1/model.json"
+        s3_key = "2000_v1/model.json"
 
         boto3.client("s3").upload_file(str(MODEL_LOCAL_PATH), S3_BUCKET_MODELS, s3_key)
         mlflow.log_param("s3_key", s3_key)
