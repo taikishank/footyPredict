@@ -140,7 +140,7 @@ liveedge/
 ## 7. Environment Variables (placeholder — fill in via .env, never commit)
 
 ```
-SPORTS_DATA_API_KEY=
+SPORTMONKS_API_KEY=
 ODDS_API_KEY=
 ANTHROPIC_API_KEY=
 AWS_REGION=

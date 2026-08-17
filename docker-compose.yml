@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: liveedge
+      POSTGRES_USER: liveedge
+      POSTGRES_PASSWORD: liveedge
+    ports:
+      - "5432:5432"
+    volumes:
+      - liveedge-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U liveedge -d liveedge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  liveedge-postgres-data:
