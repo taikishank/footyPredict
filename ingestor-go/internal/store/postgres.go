@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/taikishank/liveedge/ingestor-go/internal/ingest"
+	"github.com/taikishank/liveedge/ingestor-go/internal/live"
 )
 
 const schema = `
@@ -26,6 +27,16 @@ CREATE TABLE IF NOT EXISTS fixtures (
 	ingested_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS fixtures_starting_at_idx ON fixtures (starting_at);
+
+-- live_match_state stands in for DynamoDB until Phase 3's AWS infra is
+-- provisioned; it only ever holds each fixture's latest polled state.
+CREATE TABLE IF NOT EXISTS live_match_state (
+	fixture_id   BIGINT PRIMARY KEY,
+	state        TEXT NOT NULL,
+	home_goals   INT NOT NULL,
+	away_goals   INT NOT NULL,
+	updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 `
 
 type Store struct {
@@ -101,4 +112,40 @@ func (s *Store) UpsertFixtures(ctx context.Context, fixtures []ingest.ParsedFixt
 		return 0, fmt.Errorf("committing transaction: %w", err)
 	}
 	return changed, nil
+}
+
+// UpsertLiveState overwrites each fixture's row with its latest polled
+// state - unlike UpsertFixtures there's no history to preserve, just the
+// current snapshot a DynamoDB item would hold.
+func (s *Store) UpsertLiveState(ctx context.Context, states []live.MatchState) error {
+	if len(states) == 0 {
+		return nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for _, st := range states {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO live_match_state (fixture_id, state, home_goals, away_goals)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (fixture_id) DO UPDATE SET
+				state       = EXCLUDED.state,
+				home_goals  = EXCLUDED.home_goals,
+				away_goals  = EXCLUDED.away_goals,
+				updated_at  = now()
+		`,
+			st.FixtureID, st.State, st.HomeGoals, st.AwayGoals,
+		); err != nil {
+			return fmt.Errorf("upserting live state for fixture %d: %w", st.FixtureID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+	return nil
 }

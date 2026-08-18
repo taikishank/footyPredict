@@ -20,7 +20,18 @@ type Fixture struct {
 	Participants []Participant   `json:"participants"`
 	Scores       []Score         `json:"scores"`
 	Statistics   []Statistic     `json:"statistics"`
+	Events       []Event         `json:"events"`
 	Raw          json.RawMessage `json:"-"`
+}
+
+// Event is a single in-match event (goal, card, substitution, ...) as
+// returned by the events include.
+type Event struct {
+	ID            int64  `json:"id"`
+	TypeID        int64  `json:"type_id"`
+	ParticipantID int64  `json:"participant_id"`
+	PlayerName    string `json:"player_name"`
+	Minute        int    `json:"minute"`
 }
 
 type State struct {

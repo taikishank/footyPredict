@@ -24,7 +24,17 @@ type Config struct {
 	// RecomputeCmd, if set, is executed (via `sh -c`) after a cycle writes
 	// at least one new/changed fixture - e.g. "python3 ../ml/build_features.py".
 	RecomputeCmd string
+
+	// LivePollInterval is the minimum gap between live-match poll cycles,
+	// derived from LiveMaxPollsPerHour (see maxLivePollsPerHour).
+	LivePollInterval time.Duration
 }
+
+// maxLivePollsPerHour is a hard ceiling on how often the live poller may
+// call SportMonks, independent of the account's actual plan quota. Phase 3
+// is just starting and live traffic patterns aren't proven out yet, so this
+// stays low and fixed for now rather than configurable.
+const maxLivePollsPerHour = 140
 
 // Load reads configuration from the environment, first loading a .env file
 // if one is found by walking up from the working directory (mirrors
@@ -58,7 +68,19 @@ func Load() (Config, error) {
 		PollInterval:     pollInterval,
 		WindowDays:       windowDays,
 		RecomputeCmd:     os.Getenv("INGEST_RECOMPUTE_CMD"),
+		LivePollInterval: livePollInterval(),
 	}, nil
+}
+
+// livePollInterval rounds up 1hr/maxLivePollsPerHour to whole seconds, so a
+// ticker fired at this interval can never exceed maxLivePollsPerHour ticks
+// within any rolling hour.
+func livePollInterval() time.Duration {
+	seconds := int(time.Hour.Seconds()) / maxLivePollsPerHour
+	if int(time.Hour.Seconds())%maxLivePollsPerHour != 0 {
+		seconds++
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func durationEnv(key string, fallback time.Duration) (time.Duration, error) {

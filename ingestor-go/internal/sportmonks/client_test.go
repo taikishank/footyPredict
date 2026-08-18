@@ -136,3 +136,71 @@ func TestFetchFinishedBetween_NonOKStatus(t *testing.T) {
 		t.Fatal("expected error for non-200 response")
 	}
 }
+
+func TestFetchLive_SendsExpectedRequestAndParsesFixtures(t *testing.T) {
+	var gotPath, gotInclude string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotInclude = r.URL.Query().Get("include")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"data": [
+				{
+					"id": 1, "state": {"short_name": "1H"},
+					"scores": [
+						{"type_id": 1525, "score": {"participant": "home", "goals": 1}},
+						{"type_id": 1525, "score": {"participant": "away", "goals": 0}}
+					],
+					"events": []
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.baseURL = server.URL
+	client.httpClient = server.Client()
+
+	fixtures, err := client.FetchLive(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fixtures) != 1 || fixtures[0].ID != 1 {
+		t.Fatalf("got fixtures %+v", fixtures)
+	}
+	if !strings.HasSuffix(gotPath, "/livescores/inplay") {
+		t.Errorf("got path %q, want suffix /livescores/inplay", gotPath)
+	}
+	if gotInclude != "participants;scores;statistics;state;events" {
+		t.Errorf("got include %q", gotInclude)
+	}
+}
+
+func TestFetchLive_SkipsCallWhenRateLimitBelowFloor(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data": [], "rate_limit": {"remaining": 499, "resets_in_seconds": 1200}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.baseURL = server.URL
+	client.httpClient = server.Client()
+
+	if _, err := client.FetchLive(context.Background()); err != nil {
+		t.Fatalf("unexpected error on first call: %v", err)
+	}
+
+	_, err := client.FetchLive(context.Background())
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("got err %v, want ErrRateLimited", err)
+	}
+	if calls != 1 {
+		t.Fatalf("got %d calls after second fetch, want still 1", calls)
+	}
+}

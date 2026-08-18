@@ -7,10 +7,12 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/taikishank/liveedge/ingestor-go/internal/config"
 	"github.com/taikishank/liveedge/ingestor-go/internal/ingest"
+	"github.com/taikishank/liveedge/ingestor-go/internal/live"
 	"github.com/taikishank/liveedge/ingestor-go/internal/sportmonks"
 	"github.com/taikishank/liveedge/ingestor-go/internal/store"
 )
@@ -42,10 +44,25 @@ func main() {
 	client := sportmonks.NewClient(cfg.SportmonksAPIKey)
 	svc := ingest.NewService(client, db, cfg.WindowDays, cfg.RecomputeCmd, logger)
 
+	liveSvc := live.NewService(client, db, live.NewLocalPublisher(logger), logger)
+
 	logger.Info("ingestor starting",
 		"poll_interval", cfg.PollInterval.String(),
 		"window_days", cfg.WindowDays,
+		"live_poll_interval", cfg.LivePollInterval.String(),
 	)
-	svc.Run(ctx, cfg.PollInterval)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		svc.Run(ctx, cfg.PollInterval)
+	}()
+	go func() {
+		defer wg.Done()
+		liveSvc.Run(ctx, cfg.LivePollInterval)
+	}()
+	wg.Wait()
+
 	logger.Info("ingestor stopped")
 }
