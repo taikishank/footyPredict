@@ -14,7 +14,13 @@ from fastapi import FastAPI, HTTPException
 
 from app import db, model
 from app.features import NotEnoughHistoryError, build_match_features
-from app.schemas import HealthResponse, PredictionResponse, Probabilities
+from app.live_prob import adjust_for_live_state
+from app.schemas import (
+    HealthResponse,
+    LivePredictionResponse,
+    PredictionResponse,
+    Probabilities,
+)
 
 
 @asynccontextmanager
@@ -38,16 +44,7 @@ def health() -> HealthResponse:
 
 @app.get("/predictions/{fixture_id}", response_model=PredictionResponse)
 def get_prediction(fixture_id: int) -> PredictionResponse:
-    try:
-        features = build_match_features(fixture_id)
-    except NotEnoughHistoryError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    if features is None:
-        raise HTTPException(status_code=404, detail=f"fixture {fixture_id} not found")
-
-    probs = model.predict_proba(features.vector)
-    fixture = features.fixture
+    fixture, probs = _predict_prematch(fixture_id)
     return PredictionResponse(
         fixture_id=fixture["fixture_id"],
         league_id=fixture["league_id"],
@@ -57,6 +54,50 @@ def get_prediction(fixture_id: int) -> PredictionResponse:
         probabilities=Probabilities(**probs),
         model_version=model.model_version(),
     )
+
+
+@app.get("/predictions/{fixture_id}/live", response_model=LivePredictionResponse)
+def get_live_prediction(fixture_id: int) -> LivePredictionResponse:
+    fixture, prior = _predict_prematch(fixture_id)
+
+    live_state = db.get_live_state(fixture_id)
+    if live_state is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no live state recorded for fixture {fixture_id} - is it in play?",
+        )
+
+    probs = adjust_for_live_state(
+        prior,
+        state=live_state["state"],
+        home_goals=live_state["home_goals"],
+        away_goals=live_state["away_goals"],
+    )
+    return LivePredictionResponse(
+        fixture_id=fixture["fixture_id"],
+        league_id=fixture["league_id"],
+        starting_at=fixture["starting_at"],
+        home_team=fixture["home_name"],
+        away_team=fixture["away_name"],
+        probabilities=Probabilities(**probs),
+        model_version=model.model_version(),
+        state=live_state["state"],
+        home_goals=live_state["home_goals"],
+        away_goals=live_state["away_goals"],
+        live_state_updated_at=live_state["updated_at"],
+    )
+
+
+def _predict_prematch(fixture_id: int) -> tuple[db.FixtureRow, dict[str, float]]:
+    try:
+        features = build_match_features(fixture_id)
+    except NotEnoughHistoryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if features is None:
+        raise HTTPException(status_code=404, detail=f"fixture {fixture_id} not found")
+
+    return features.fixture, model.predict_proba(features.vector)
 
 
 if __name__ == "__main__":

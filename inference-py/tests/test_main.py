@@ -73,3 +73,47 @@ def test_get_prediction_422_when_not_enough_history(client, monkeypatch):
     monkeypatch.setattr(main, "build_match_features", raise_not_enough)
     resp = client.get("/predictions/123")
     assert resp.status_code == 422
+
+
+def test_get_live_prediction_returns_adjusted_probabilities(client, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "build_match_features",
+        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+    )
+    monkeypatch.setattr(
+        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+    )
+    monkeypatch.setattr(
+        db,
+        "get_live_state",
+        lambda fixture_id: {
+            "state": "2H",
+            "home_goals": 1,
+            "away_goals": 0,
+            "updated_at": datetime(2026, 1, 1, 16, 0, tzinfo=timezone.utc),
+        },
+    )
+
+    resp = client.get("/predictions/123/live")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "2H"
+    assert body["home_goals"] == 1
+    assert body["probabilities"]["home_win"] > 0.5
+
+
+def test_get_live_prediction_404_when_fixture_not_live(client, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "build_match_features",
+        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+    )
+    monkeypatch.setattr(
+        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+    )
+    monkeypatch.setattr(db, "get_live_state", lambda fixture_id: None)
+
+    resp = client.get("/predictions/123/live")
+    assert resp.status_code == 404

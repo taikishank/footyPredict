@@ -19,6 +19,13 @@ class PredictionResponse(BaseModel):
     model_version: str
 
 
+class LivePredictionResponse(PredictionResponse):
+    state: str
+    home_goals: int
+    away_goals: int
+    live_state_updated_at: datetime
+
+
 class HealthResponse(BaseModel):
     status: str
     model_version: str | None = None

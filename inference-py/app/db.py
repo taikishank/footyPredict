@@ -29,6 +29,13 @@ class TeamResultRow(TypedDict):
     stats: dict
 
 
+class LiveStateRow(TypedDict):
+    state: str
+    home_goals: int
+    away_goals: int
+    updated_at: datetime
+
+
 def get_fixture(fixture_id: int) -> FixtureRow | None:
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -75,3 +82,23 @@ def get_team_history(team_id: int, before: datetime, limit: int) -> list[TeamRes
         })
     history.reverse()  # oldest -> most recent, matching team_form()'s expectation
     return history
+
+
+def get_live_state(fixture_id: int) -> LiveStateRow | None:
+    """Reads the latest polled live state ingestor-go's live poller wrote
+    (see ingestor-go/internal/store/postgres.go's live_match_state table).
+    Returns None if the fixture has never been polled as live."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT state, home_goals, away_goals, updated_at
+            FROM live_match_state
+            WHERE fixture_id = %s
+            """,
+            (fixture_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        keys = ("state", "home_goals", "away_goals", "updated_at")
+        return dict(zip(keys, row))  # type: ignore[return-value]
