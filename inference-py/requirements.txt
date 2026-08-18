@@ -1,5 +1,8 @@
 xgboost
 fastapi
+uvicorn[standard]
+psycopg[binary]
+psycopg_pool
 scikit-learn
 pandas
 requests
@@ -8,3 +11,5 @@ boto3
 joblib
 matplotlib
 mlflow
+pytest
+httpx

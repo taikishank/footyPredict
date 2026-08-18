@@ -30,5 +30,10 @@ ml/models/
 ml/data/
 ml/mlruns/
 
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # Claude
 .claude
