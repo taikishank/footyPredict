@@ -9,6 +9,7 @@ import (
 
 	"github.com/taikishank/liveedge/ingestor-go/internal/ingest"
 	"github.com/taikishank/liveedge/ingestor-go/internal/live"
+	"github.com/taikishank/liveedge/ingestor-go/internal/upcoming"
 )
 
 const schema = `
@@ -20,13 +21,21 @@ CREATE TABLE IF NOT EXISTS fixtures (
 	away_id      BIGINT NOT NULL,
 	home_name    TEXT NOT NULL,
 	away_name    TEXT NOT NULL,
-	home_goals   INT NOT NULL,
-	away_goals   INT NOT NULL,
-	result       TEXT NOT NULL,
+	home_goals   INT,
+	away_goals   INT,
+	result       TEXT,
 	raw          JSONB NOT NULL,
 	ingested_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS fixtures_starting_at_idx ON fixtures (starting_at);
+
+-- home_goals/away_goals/result started out NOT NULL, back when the batch
+-- pipeline (finished fixtures only) was the only writer. The upcoming-
+-- fixtures pipeline seeds rows before a result exists, so relax them; this
+-- is a no-op on a fresh table.
+ALTER TABLE fixtures ALTER COLUMN home_goals DROP NOT NULL;
+ALTER TABLE fixtures ALTER COLUMN away_goals DROP NOT NULL;
+ALTER TABLE fixtures ALTER COLUMN result DROP NOT NULL;
 
 -- live_match_state stands in for DynamoDB until Phase 3's AWS infra is
 -- provisioned; it only ever holds each fixture's latest polled state.
@@ -104,6 +113,55 @@ func (s *Store) UpsertFixtures(ctx context.Context, fixtures []ingest.ParsedFixt
 		)
 		if err != nil {
 			return 0, fmt.Errorf("upserting fixture %d: %w", f.FixtureID, err)
+		}
+		changed += int(tag.RowsAffected())
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("committing transaction: %w", err)
+	}
+	return changed, nil
+}
+
+// UpsertUpcomingFixtures seeds fixtures rows ahead of kickoff, with no
+// score/result yet. It never overwrites a row that already has a result -
+// once the batch pipeline (UpsertFixtures) has finalized a fixture, this
+// pipeline backs off rather than re-fetching a fixture that's already
+// dropped out of its own forward-looking window.
+func (s *Store) UpsertUpcomingFixtures(ctx context.Context, fixtures []upcoming.ParsedFixture) (int, error) {
+	if len(fixtures) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	changed := 0
+	for _, f := range fixtures {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO fixtures (
+				fixture_id, league_id, starting_at, home_id, away_id,
+				home_name, away_name, raw
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (fixture_id) DO UPDATE SET
+				league_id   = EXCLUDED.league_id,
+				starting_at = EXCLUDED.starting_at,
+				home_id     = EXCLUDED.home_id,
+				away_id     = EXCLUDED.away_id,
+				home_name   = EXCLUDED.home_name,
+				away_name   = EXCLUDED.away_name,
+				raw         = EXCLUDED.raw,
+				ingested_at = now()
+			WHERE fixtures.result IS NULL AND fixtures.raw IS DISTINCT FROM EXCLUDED.raw
+		`,
+			f.FixtureID, f.LeagueID, f.StartingAt, f.HomeID, f.AwayID,
+			f.HomeName, f.AwayName, f.Raw,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("upserting upcoming fixture %d: %w", f.FixtureID, err)
 		}
 		changed += int(tag.RowsAffected())
 	}

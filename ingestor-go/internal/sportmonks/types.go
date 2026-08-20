@@ -42,6 +42,23 @@ func (f Fixture) IsFinished() bool {
 	return finishedStates[f.State.ShortName]
 }
 
+// IsUpcoming reports whether a fixture has not yet kicked off. Postponed/
+// cancelled fixtures are deliberately excluded - they have a starting_at in
+// the window but no meaningful kickoff to predict.
+func (f Fixture) IsUpcoming() bool {
+	return f.State.ShortName == "NS"
+}
+
+// Participant returns the fixture's home or away participant ("home"/"away").
+func (f Fixture) Participant(location string) (Participant, bool) {
+	for _, p := range f.Participants {
+		if p.Meta.Location == location {
+			return p, true
+		}
+	}
+	return Participant{}, false
+}
+
 type Participant struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`

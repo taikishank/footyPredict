@@ -15,6 +15,7 @@ import (
 	"github.com/taikishank/liveedge/ingestor-go/internal/live"
 	"github.com/taikishank/liveedge/ingestor-go/internal/sportmonks"
 	"github.com/taikishank/liveedge/ingestor-go/internal/store"
+	"github.com/taikishank/liveedge/ingestor-go/internal/upcoming"
 )
 
 func main() {
@@ -45,15 +46,18 @@ func main() {
 	svc := ingest.NewService(client, db, cfg.WindowDays, cfg.RecomputeCmd, logger)
 
 	liveSvc := live.NewService(client, db, live.NewLocalPublisher(logger), logger)
+	upcomingSvc := upcoming.NewService(client, db, cfg.UpcomingWindowDays, logger)
 
 	logger.Info("ingestor starting",
 		"poll_interval", cfg.PollInterval.String(),
 		"window_days", cfg.WindowDays,
 		"live_poll_interval", cfg.LivePollInterval.String(),
+		"upcoming_poll_interval", cfg.UpcomingPollInterval.String(),
+		"upcoming_window_days", cfg.UpcomingWindowDays,
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		svc.Run(ctx, cfg.PollInterval)
@@ -61,6 +65,10 @@ func main() {
 	go func() {
 		defer wg.Done()
 		liveSvc.Run(ctx, cfg.LivePollInterval)
+	}()
+	go func() {
+		defer wg.Done()
+		upcomingSvc.Run(ctx, cfg.UpcomingPollInterval)
 	}()
 	wg.Wait()
 

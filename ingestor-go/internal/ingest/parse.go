@@ -33,8 +33,8 @@ type ParsedFixture struct {
 // returns (zero, false) for fixtures with no derivable final score, mirroring
 // build_features.py's parse_fixture behavior of skipping those.
 func parseFixture(f sportmonks.Fixture) (ParsedFixture, bool, error) {
-	home, homeOK := findParticipant(f.Participants, "home")
-	away, awayOK := findParticipant(f.Participants, "away")
+	home, homeOK := f.Participant("home")
+	away, awayOK := f.Participant("away")
 	if !homeOK || !awayOK {
 		return ParsedFixture{}, false, fmt.Errorf("fixture %d missing home/away participant", f.ID)
 	}
@@ -62,15 +62,6 @@ func parseFixture(f sportmonks.Fixture) (ParsedFixture, bool, error) {
 		Result:     result(homeGoals, awayGoals),
 		Raw:        f.Raw,
 	}, true, nil
-}
-
-func findParticipant(participants []sportmonks.Participant, location string) (sportmonks.Participant, bool) {
-	for _, p := range participants {
-		if p.Meta.Location == location {
-			return p, true
-		}
-	}
-	return sportmonks.Participant{}, false
 }
 
 // finalGoals prefers the CURRENT score entry (type_id 1525); if a fixture

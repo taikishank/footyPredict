@@ -71,6 +71,87 @@ func TestFetchFinishedBetween_FiltersUnfinishedAndSendsExpectedRequest(t *testin
 	}
 }
 
+func TestFetchUpcomingBetween_FiltersToNotStarted(t *testing.T) {
+	var gotPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"data": [
+				{
+					"id": 1, "league_id": 8, "starting_at": "2026-01-10 15:00:00",
+					"state": {"short_name": "FT"},
+					"participants": [], "scores": [], "statistics": []
+				},
+				{
+					"id": 2, "league_id": 8, "starting_at": "2026-01-11 15:00:00",
+					"state": {"short_name": "NS"},
+					"participants": [], "scores": [], "statistics": []
+				},
+				{
+					"id": 3, "league_id": 8, "starting_at": "2026-01-11 15:00:00",
+					"state": {"short_name": "POSTP"},
+					"participants": [], "scores": [], "statistics": []
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.baseURL = server.URL
+	client.httpClient = server.Client()
+
+	start := time.Date(2026, 1, 8, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 1, 11, 0, 0, 0, 0, time.UTC)
+
+	fixtures, err := client.FetchUpcomingBetween(context.Background(), start, end)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fixtures) != 1 {
+		t.Fatalf("got %d fixtures, want 1 (only NS should pass the upcoming filter)", len(fixtures))
+	}
+	if fixtures[0].ID != 2 {
+		t.Fatalf("got fixture id %d, want 2", fixtures[0].ID)
+	}
+	if !strings.HasSuffix(gotPath, "/fixtures/between/2026-01-08/2026-01-11") {
+		t.Errorf("got path %q, want suffix /fixtures/between/2026-01-08/2026-01-11", gotPath)
+	}
+}
+
+func TestFetchUpcomingBetween_SkipsCallWhenRateLimitBelowFloor(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data": [], "rate_limit": {"remaining": 499, "resets_in_seconds": 1200}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.baseURL = server.URL
+	client.httpClient = server.Client()
+
+	if _, err := client.FetchUpcomingBetween(context.Background(), time.Now(), time.Now()); err != nil {
+		t.Fatalf("unexpected error on first call: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("got %d calls after first fetch, want 1", calls)
+	}
+
+	_, err := client.FetchUpcomingBetween(context.Background(), time.Now(), time.Now())
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("got err %v, want ErrRateLimited", err)
+	}
+	if calls != 1 {
+		t.Fatalf("got %d calls after second fetch, want still 1 (should not have called server)", calls)
+	}
+}
+
 func TestFetchFinishedBetween_SkipsCallWhenRateLimitBelowFloor(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

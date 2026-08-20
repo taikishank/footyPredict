@@ -53,6 +53,43 @@ func NewClient(apiKey string) *Client {
 // It refuses to call the API at all if the last known rate limit is too low;
 // see ErrRateLimited.
 func (c *Client) FetchFinishedBetween(ctx context.Context, start, end time.Time) ([]Fixture, error) {
+	fixtures, err := c.fetchBetween(ctx, start, end)
+	if err != nil {
+		return nil, err
+	}
+	finished := make([]Fixture, 0, len(fixtures))
+	for _, f := range fixtures {
+		if f.IsFinished() {
+			finished = append(finished, f)
+		}
+	}
+	return finished, nil
+}
+
+// FetchUpcomingBetween returns all not-yet-started fixtures with a
+// starting_at date between start and end (inclusive), across all leagues the
+// API key covers. Used to populate the fixtures table ahead of kickoff so
+// the Upcoming tab can serve pre-match predictions (PROJECT_SPEC.md Phase 4).
+// It refuses to call the API at all if the last known rate limit is too low;
+// see ErrRateLimited.
+func (c *Client) FetchUpcomingBetween(ctx context.Context, start, end time.Time) ([]Fixture, error) {
+	fixtures, err := c.fetchBetween(ctx, start, end)
+	if err != nil {
+		return nil, err
+	}
+	upcoming := make([]Fixture, 0, len(fixtures))
+	for _, f := range fixtures {
+		if f.IsUpcoming() {
+			upcoming = append(upcoming, f)
+		}
+	}
+	return upcoming, nil
+}
+
+// fetchBetween calls the /fixtures/between/{start}/{end} endpoint and
+// returns every fixture in the window, unfiltered by state - callers narrow
+// down to the states they care about (finished, upcoming, ...).
+func (c *Client) fetchBetween(ctx context.Context, start, end time.Time) ([]Fixture, error) {
 	if c.rateLimitExhausted() {
 		return nil, ErrRateLimited
 	}
@@ -95,9 +132,7 @@ func (c *Client) FetchFinishedBetween(ctx context.Context, start, end time.Time)
 			return nil, fmt.Errorf("decoding fixture: %w", err)
 		}
 		f.Raw = raw
-		if f.IsFinished() {
-			fixtures = append(fixtures, f)
-		}
+		fixtures = append(fixtures, f)
 	}
 	return fixtures, nil
 }

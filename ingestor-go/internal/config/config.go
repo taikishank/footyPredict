@@ -28,6 +28,14 @@ type Config struct {
 	// LivePollInterval is the minimum gap between live-match poll cycles,
 	// derived from LiveMaxPollsPerHour (see maxLivePollsPerHour).
 	LivePollInterval time.Duration
+
+	// UpcomingPollInterval controls how often the upcoming-fixtures ticker
+	// triggers a pull cycle.
+	UpcomingPollInterval time.Duration
+	// UpcomingWindowDays is how far forward (from now) to search for
+	// not-yet-started fixtures on each cycle - matches the dashboard's
+	// Upcoming tab window (PROJECT_SPEC.md Phase 4).
+	UpcomingWindowDays int
 }
 
 // maxLivePollsPerHour is a hard ceiling on how often the live poller may
@@ -62,13 +70,25 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	upcomingPollInterval, err := durationEnv("UPCOMING_POLL_INTERVAL", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+
+	upcomingWindowDays, err := intEnv("UPCOMING_WINDOW_DAYS", 3)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
-		SportmonksAPIKey: apiKey,
-		PostgresURL:      pgURL,
-		PollInterval:     pollInterval,
-		WindowDays:       windowDays,
-		RecomputeCmd:     os.Getenv("INGEST_RECOMPUTE_CMD"),
-		LivePollInterval: livePollInterval(),
+		SportmonksAPIKey:     apiKey,
+		PostgresURL:          pgURL,
+		PollInterval:         pollInterval,
+		WindowDays:           windowDays,
+		RecomputeCmd:         os.Getenv("INGEST_RECOMPUTE_CMD"),
+		LivePollInterval:     livePollInterval(),
+		UpcomingPollInterval: upcomingPollInterval,
+		UpcomingWindowDays:   upcomingWindowDays,
 	}, nil
 }
 
