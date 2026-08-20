@@ -1,12 +1,27 @@
 import { Component, signal } from '@angular/core';
-import { RouterOutlet } from '@angular/router';
+
+import { LiveDashboardComponent } from './live-prediction/live-dashboard.component';
+import { UpcomingFixturesComponent } from './upcoming-fixtures/upcoming-fixtures.component';
+
+type Tab = 'live' | 'upcoming';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet],
+  imports: [LiveDashboardComponent, UpcomingFixturesComponent],
   templateUrl: './app.html',
-  styleUrl: './app.css'
 })
 export class App {
-  protected readonly title = signal('footyPredict');
+  protected readonly activeTab = signal<Tab>('live');
+
+  // Set by the Upcoming tab's "Watch live" handoff (PROJECT_SPEC.md Phase 4).
+  protected readonly handoffFixtureId = signal<number | null>(null);
+
+  protected selectTab(tab: Tab): void {
+    this.activeTab.set(tab);
+  }
+
+  protected watchOnLiveTab(fixtureId: number): void {
+    this.handoffFixtureId.set(fixtureId);
+    this.activeTab.set('live');
+  }
 }

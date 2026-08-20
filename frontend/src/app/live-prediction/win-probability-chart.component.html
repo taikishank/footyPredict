@@ -1,0 +1,31 @@
+<div class="w-full">
+  <svg
+    viewBox="0 0 100 100"
+    preserveAspectRatio="none"
+    class="h-64 w-full rounded-lg bg-slate-950"
+  >
+    <line x1="0" y1="50" x2="100" y2="50" class="stroke-slate-800" stroke-width="0.5" />
+
+    @for (s of series(); track s.label) {
+      @if (s.points) {
+        <polyline
+          [attr.points]="s.points"
+          fill="none"
+          [class]="s.strokeClass"
+          stroke-width="1.5"
+          vector-effect="non-scaling-stroke"
+        />
+      }
+    }
+  </svg>
+
+  <div class="mt-3 flex flex-wrap gap-4 text-sm">
+    @for (s of series(); track s.label) {
+      <div class="flex items-center gap-2">
+        <span class="inline-block h-2 w-2 rounded-full" [class]="s.dotClass"></span>
+        <span class="text-slate-300">{{ s.label }}</span>
+        <span class="font-semibold text-white">{{ s.latestPct }}%</span>
+      </div>
+    }
+  </div>
+</div>

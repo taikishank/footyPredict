@@ -1,0 +1,72 @@
+<div class="min-h-screen bg-slate-900 px-6 py-10 text-slate-100">
+  <div class="mx-auto max-w-3xl">
+    <h1 class="text-2xl font-semibold">LiveEdge — Live Win Probability</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Watch a fixture's model-implied win probability update as the match progresses.
+    </p>
+
+    <form class="mt-6 flex items-end gap-3" (ngSubmit)="watch()">
+      <label class="flex flex-col gap-1 text-sm">
+        Fixture ID
+        <input
+          type="number"
+          name="fixtureId"
+          required
+          class="w-40 rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100 focus:border-emerald-500 focus:outline-none"
+          [ngModel]="fixtureIdInput()"
+          (ngModelChange)="fixtureIdInput.set($event)"
+        />
+      </label>
+      <button
+        type="submit"
+        class="rounded-md bg-emerald-600 px-4 py-2 font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+        [disabled]="fixtureIdInput() === null || live.status() === 'connecting'"
+      >
+        Watch
+      </button>
+      <button
+        type="button"
+        class="rounded-md border border-slate-700 px-4 py-2 font-medium text-slate-200 hover:bg-slate-800"
+        (click)="stop()"
+      >
+        Stop
+      </button>
+    </form>
+
+    <div class="mt-2 text-sm">
+      Status:
+      <span
+        class="font-medium"
+        [class.text-emerald-400]="live.status() === 'open'"
+        [class.text-amber-400]="live.status() === 'connecting'"
+        [class.text-slate-400]="live.status() === 'idle' || live.status() === 'closed'"
+        [class.text-rose-400]="live.status() === 'error'"
+      >
+        {{ live.status() }}
+      </span>
+    </div>
+
+    @if (live.errorMessage(); as message) {
+      <p class="mt-2 rounded-md bg-rose-950 px-3 py-2 text-sm text-rose-300">{{ message }}</p>
+    }
+
+    @if (live.latest(); as prediction) {
+      <div class="mt-8 rounded-lg border border-slate-800 bg-slate-950/40 p-5">
+        <div class="flex items-baseline justify-between">
+          <div class="text-lg font-semibold">
+            {{ prediction.home_team }} {{ prediction.home_goals }} &ndash; {{ prediction.away_goals }}
+            {{ prediction.away_team }}
+          </div>
+          <div class="text-sm text-slate-400">{{ prediction.state }}</div>
+        </div>
+        <p class="mt-1 text-xs text-slate-500">model {{ prediction.model_version }}</p>
+
+        <div class="mt-6">
+          <app-win-probability-chart [points]="live.history()" />
+        </div>
+      </div>
+    } @else {
+      <p class="mt-8 text-sm text-slate-500">No live fixture connected yet.</p>
+    }
+  </div>
+</div>

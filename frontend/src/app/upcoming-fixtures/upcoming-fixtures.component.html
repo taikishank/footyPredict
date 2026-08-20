@@ -1,0 +1,57 @@
+<div class="min-h-screen bg-slate-900 px-6 py-10 text-slate-100">
+  <div class="mx-auto max-w-3xl">
+    <h1 class="text-2xl font-semibold">LiveEdge — Upcoming Fixtures</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Fixtures kicking off in the next few days, with the model's pre-match win probability.
+      Odds and edge columns aren't available yet - they land with the Odds API integration.
+    </p>
+
+    @if (fixturesService.status() === 'loading') {
+      <p class="mt-8 text-sm text-slate-500">Loading fixtures&hellip;</p>
+    }
+
+    @if (fixturesService.errorMessage(); as message) {
+      <p class="mt-6 rounded-md bg-rose-950 px-3 py-2 text-sm text-rose-300">{{ message }}</p>
+    }
+
+    @if (fixturesService.status() === 'loaded' && fixturesService.fixtures().length === 0) {
+      <p class="mt-8 text-sm text-slate-500">No fixtures in the next few days.</p>
+    }
+
+    @if (fixturesService.fixtures().length > 0) {
+      <div class="mt-6 divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-950/40">
+        @for (fx of fixturesService.fixtures(); track fx.fixture_id) {
+          <div class="flex items-center justify-between gap-4 px-5 py-4">
+            <div>
+              <div class="font-medium">{{ fx.home_team }} vs {{ fx.away_team }}</div>
+              <div class="mt-0.5 text-xs text-slate-500">
+                {{ fx.starting_at | date: 'MMM d, HH:mm' }}
+              </div>
+            </div>
+
+            <div class="text-right text-sm">
+              @if (fx.probabilities; as probs) {
+                <div class="text-slate-300">
+                  H {{ probs.home_win * 100 | number: '1.0-0' }}% &middot;
+                  D {{ probs.draw * 100 | number: '1.0-0' }}% &middot;
+                  A {{ probs.away_win * 100 | number: '1.0-0' }}%
+                </div>
+              } @else {
+                <div class="text-slate-500">insufficient history</div>
+              }
+              <div class="mt-0.5 text-xs text-slate-600">odds/edge: not yet available</div>
+            </div>
+
+            <button
+              type="button"
+              class="rounded-md border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
+              (click)="watch(fx.fixture_id)"
+            >
+              Watch live
+            </button>
+          </div>
+        }
+      </div>
+    }
+  </div>
+</div>
