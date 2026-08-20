@@ -84,6 +84,27 @@ def get_team_history(team_id: int, before: datetime, limit: int) -> list[TeamRes
     return history
 
 
+def list_upcoming_fixtures(start: datetime, end: datetime) -> list[FixtureRow]:
+    """Fixtures kicking off in [start, end), soonest first (see
+    PROJECT_SPEC.md Phase 4's Upcoming tab)."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT fixture_id, league_id, starting_at, home_id, away_id, home_name, away_name
+            FROM fixtures
+            WHERE starting_at >= %s AND starting_at < %s
+            ORDER BY starting_at ASC
+            """,
+            (start, end),
+        )
+        rows = cur.fetchall()
+        keys = (
+            "fixture_id", "league_id", "starting_at",
+            "home_id", "away_id", "home_name", "away_name",
+        )
+        return [dict(zip(keys, row)) for row in rows]  # type: ignore[misc]
+
+
 def get_live_state(fixture_id: int) -> LiveStateRow | None:
     """Reads the latest polled live state ingestor-go's live poller wrote
     (see ingestor-go/internal/store/postgres.go's live_match_state table).

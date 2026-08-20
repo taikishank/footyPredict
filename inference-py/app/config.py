@@ -26,3 +26,14 @@ MODEL_LOCAL_PATH = Path(
         Path(__file__).resolve().parents[2] / "ml" / "models" / "match_outcome_model.json",
     )
 )
+
+# Angular dev server origins allowed to call this API cross-origin (see
+# app.ts's `ng serve` / environment.ts's apiBaseUrl). Comma-separated;
+# override via env once there's a real deployed frontend origin.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:4200,http://localhost:4300"
+    ).split(",")
+    if origin.strip()
+]
