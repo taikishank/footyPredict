@@ -80,12 +80,19 @@ A full-stack, cloud-deployed system that:
 - DynamoDB holds current match state (score, minute, momentum stats)
 - FastAPI computes live win probability, updates on each event
 - Angular dashboard shows live win-probability chart via WebSocket
+- Dashboard is tabbed: **Live** tab (current single-fixture WS view) and
+  **Upcoming** tab (see Phase 4 — fixtures in the next ~3 days, odds-derived)
 
 ### Phase 4 — Odds & Edge Detection
 - Lambda fetches odds from Odds API on a schedule for upcoming/live matches
 - Convert odds → implied probability, de-vig
 - Compute edge = model_prob − market_implied_prob
 - Store edges in Postgres; flag threshold-exceeding edges
+- **Upcoming Fixtures tab (dashboard):** lists fixtures kicking off within the
+  next ~3 days, sourced from the Odds API fetch above (fixture list + current
+  odds/implied probability per fixture). Model makaes pre-match predictions
+  if it satisfies the window constraint for the model. Feeds fixture IDs a 
+  user can hand off to the Live tab once a match goes live.
 
 ### Phase 5 — Claude API Context Synthesis
 - Lambda calls Claude API with web search tool enabled
