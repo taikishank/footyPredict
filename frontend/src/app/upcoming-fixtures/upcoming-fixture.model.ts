@@ -10,6 +10,9 @@ export interface UpcomingFixture {
   away_team: string;
   probabilities: Probabilities | null;
   model_version: string | null;
+  market: Probabilities | null;
+  edge: Probabilities | null;
+  flagged: boolean;
 }
 
 export interface UpcomingFixturesResponse {

@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import db, model
-from app.config import CORS_ALLOWED_ORIGINS
+from app.config import CORS_ALLOWED_ORIGINS, EDGE_FLAG_THRESHOLD
 from app.features import NotEnoughHistoryError, build_match_features
 from app.live_prob import adjust_for_live_state
 from app.schemas import (
@@ -95,8 +95,9 @@ def get_live_prediction(fixture_id: int) -> LivePredictionResponse:
 @app.get("/fixtures/upcoming", response_model=UpcomingFixturesResponse)
 def list_upcoming_fixtures() -> UpcomingFixturesResponse:
     """Fixtures kicking off within _UPCOMING_WINDOW, each with the model's
-    pre-match prediction where enough history exists. No odds/edge data yet -
-    that lands with the Odds API integration (PROJECT_SPEC.md Phase 4)."""
+    pre-match prediction where enough history exists, plus market odds and
+    the model-vs-market edge where the odds poller has matched a bookmaker
+    event to the fixture (PROJECT_SPEC.md Phase 4)."""
     now = datetime.now(timezone.utc)
     rows = db.list_upcoming_fixtures(now, now + _UPCOMING_WINDOW)
 
@@ -105,6 +106,16 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
         try:
             features = build_match_features(row["fixture_id"])
         except NotEnoughHistoryError:
+            odds_row = db.get_odds(row["fixture_id"])
+            market = (
+                Probabilities(
+                    home_win=odds_row["implied_home"],
+                    draw=odds_row["implied_draw"],
+                    away_win=odds_row["implied_away"],
+                )
+                if odds_row is not None
+                else None
+            )
             fixtures.append(
                 UpcomingFixture(
                     fixture_id=row["fixture_id"],
@@ -114,12 +125,16 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
                     away_team=row["away_name"],
                     probabilities=None,
                     model_version=None,
+                    market=market,
                 )
             )
             continue
 
         if features is None:
             continue  # fixture vanished between list and lookup; skip it
+
+        model_probs = model.predict_proba(features.vector)
+        market, edge, flagged = _market_and_edge(features.fixture["fixture_id"], model_probs)
 
         fixtures.append(
             UpcomingFixture(
@@ -128,14 +143,42 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
                 starting_at=features.fixture["starting_at"],
                 home_team=features.fixture["home_name"],
                 away_team=features.fixture["away_name"],
-                probabilities=Probabilities(**model.predict_proba(features.vector)),
+                probabilities=Probabilities(**model_probs),
                 model_version=model.model_version(),
+                market=market,
+                edge=edge,
+                flagged=flagged,
             )
         )
 
     return UpcomingFixturesResponse(
         generated_at=now, window_days=_UPCOMING_WINDOW.days, fixtures=fixtures
     )
+
+
+def _market_and_edge(
+    fixture_id: int, model_probs: dict
+) -> tuple[Probabilities | None, Probabilities | None, bool]:
+    """Looks up the fixture's odds match (if any), computes edge = model -
+    market per outcome, and persists a snapshot to `edges` for Phase 6's
+    backtest module. Returns (None, None, False) when there's no odds match."""
+    odds_row = db.get_odds(fixture_id)
+    if odds_row is None:
+        return None, None, False
+
+    market_probs = {
+        "home_win": odds_row["implied_home"],
+        "draw": odds_row["implied_draw"],
+        "away_win": odds_row["implied_away"],
+    }
+    edge_probs = {
+        outcome: model_probs[outcome] - market_probs[outcome] for outcome in model_probs
+    }
+    flagged = max(abs(v) for v in edge_probs.values()) >= EDGE_FLAG_THRESHOLD
+
+    db.insert_edge(fixture_id, model_probs, market_probs, edge_probs, flagged)
+
+    return Probabilities(**market_probs), Probabilities(**edge_probs), flagged
 
 
 @app.websocket("/ws/predictions/{fixture_id}/live")

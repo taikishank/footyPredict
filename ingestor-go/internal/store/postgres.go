@@ -4,11 +4,13 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/taikishank/liveedge/ingestor-go/internal/ingest"
 	"github.com/taikishank/liveedge/ingestor-go/internal/live"
+	"github.com/taikishank/liveedge/ingestor-go/internal/odds"
 	"github.com/taikishank/liveedge/ingestor-go/internal/upcoming"
 )
 
@@ -45,6 +47,41 @@ CREATE TABLE IF NOT EXISTS live_match_state (
 	home_goals   INT NOT NULL,
 	away_goals   INT NOT NULL,
 	updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- odds holds each fixture's latest de-vigged bookmaker prices (PROJECT_SPEC.md
+-- Phase 4). Like live_match_state, it's latest-only - the odds poller
+-- overwrites rather than accumulates history.
+CREATE TABLE IF NOT EXISTS odds (
+	fixture_id      BIGINT PRIMARY KEY REFERENCES fixtures(fixture_id),
+	bookmaker_count INT NOT NULL,
+	home_price      NUMERIC NOT NULL,
+	draw_price      NUMERIC NOT NULL,
+	away_price      NUMERIC NOT NULL,
+	implied_home    NUMERIC NOT NULL,
+	implied_draw    NUMERIC NOT NULL,
+	implied_away    NUMERIC NOT NULL,
+	fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- edges is append-only, unlike odds/live_match_state: inference-py inserts a
+-- row each time it serves /fixtures/upcoming for a fixture with an odds
+-- match, so Phase 6's backtest module has real history to grade against
+-- actual outcomes rather than only ever seeing the latest snapshot.
+CREATE TABLE IF NOT EXISTS edges (
+	fixture_id   BIGINT NOT NULL REFERENCES fixtures(fixture_id),
+	computed_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+	model_home   NUMERIC NOT NULL,
+	model_draw   NUMERIC NOT NULL,
+	model_away   NUMERIC NOT NULL,
+	market_home  NUMERIC NOT NULL,
+	market_draw  NUMERIC NOT NULL,
+	market_away  NUMERIC NOT NULL,
+	edge_home    NUMERIC NOT NULL,
+	edge_draw    NUMERIC NOT NULL,
+	edge_away    NUMERIC NOT NULL,
+	flagged      BOOLEAN NOT NULL,
+	PRIMARY KEY (fixture_id, computed_at)
 );
 `
 
@@ -206,4 +243,77 @@ func (s *Store) UpsertLiveState(ctx context.Context, states []live.MatchState) e
 		return fmt.Errorf("committing transaction: %w", err)
 	}
 	return nil
+}
+
+// ListFixturesForLeague returns fixtures in the given league kicking off in
+// [start, end), for the odds poller to match The Odds API's events against
+// (see odds.Service.runCycle).
+func (s *Store) ListFixturesForLeague(ctx context.Context, leagueID int64, start, end time.Time) ([]odds.FixtureCandidate, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT fixture_id, home_name, away_name, starting_at
+		FROM fixtures
+		WHERE league_id = $1 AND starting_at >= $2 AND starting_at < $3
+	`, leagueID, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("listing fixtures for league %d: %w", leagueID, err)
+	}
+	defer rows.Close()
+
+	var candidates []odds.FixtureCandidate
+	for rows.Next() {
+		var c odds.FixtureCandidate
+		if err := rows.Scan(&c.FixtureID, &c.HomeName, &c.AwayName, &c.StartingAt); err != nil {
+			return nil, fmt.Errorf("scanning fixture candidate: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading fixture candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+// UpsertOdds overwrites each fixture's row with its latest de-vigged prices -
+// like UpsertLiveState, this is a snapshot table with no history.
+func (s *Store) UpsertOdds(ctx context.Context, parsed []odds.ParsedOdds) (int, error) {
+	if len(parsed) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	changed := 0
+	for _, o := range parsed {
+		tag, err := tx.Exec(ctx, `
+			INSERT INTO odds (
+				fixture_id, bookmaker_count, home_price, draw_price, away_price,
+				implied_home, implied_draw, implied_away
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (fixture_id) DO UPDATE SET
+				bookmaker_count = EXCLUDED.bookmaker_count,
+				home_price      = EXCLUDED.home_price,
+				draw_price      = EXCLUDED.draw_price,
+				away_price      = EXCLUDED.away_price,
+				implied_home    = EXCLUDED.implied_home,
+				implied_draw    = EXCLUDED.implied_draw,
+				implied_away    = EXCLUDED.implied_away,
+				fetched_at      = now()
+		`,
+			o.FixtureID, o.BookmakerCount, o.HomePrice, o.DrawPrice, o.AwayPrice,
+			o.ImpliedHome, o.ImpliedDraw, o.ImpliedAway,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("upserting odds for fixture %d: %w", o.FixtureID, err)
+		}
+		changed += int(tag.RowsAffected())
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("committing transaction: %w", err)
+	}
+	return changed, nil
 }

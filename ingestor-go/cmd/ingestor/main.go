@@ -13,6 +13,7 @@ import (
 	"github.com/taikishank/liveedge/ingestor-go/internal/config"
 	"github.com/taikishank/liveedge/ingestor-go/internal/ingest"
 	"github.com/taikishank/liveedge/ingestor-go/internal/live"
+	"github.com/taikishank/liveedge/ingestor-go/internal/odds"
 	"github.com/taikishank/liveedge/ingestor-go/internal/sportmonks"
 	"github.com/taikishank/liveedge/ingestor-go/internal/store"
 	"github.com/taikishank/liveedge/ingestor-go/internal/upcoming"
@@ -54,6 +55,7 @@ func main() {
 		"live_poll_interval", cfg.LivePollInterval.String(),
 		"upcoming_poll_interval", cfg.UpcomingPollInterval.String(),
 		"upcoming_window_days", cfg.UpcomingWindowDays,
+		"odds_poll_interval", cfg.OddsPollInterval.String(),
 	)
 
 	var wg sync.WaitGroup
@@ -70,6 +72,18 @@ func main() {
 		defer wg.Done()
 		upcomingSvc.Run(ctx, cfg.UpcomingPollInterval)
 	}()
+
+	if cfg.OddsAPIKey == "" {
+		logger.Warn("ODDS_API_KEY not set, skipping odds poller")
+	} else {
+		oddsClient := odds.NewClient(cfg.OddsAPIKey)
+		oddsSvc := odds.NewService(oddsClient, db, db, cfg.UpcomingWindowDays, logger)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			oddsSvc.Run(ctx, cfg.OddsPollInterval)
+		}()
+	}
 	wg.Wait()
 
 	logger.Info("ingestor stopped")

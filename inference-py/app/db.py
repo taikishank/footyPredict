@@ -36,6 +36,12 @@ class LiveStateRow(TypedDict):
     updated_at: datetime
 
 
+class OddsRow(TypedDict):
+    implied_home: float
+    implied_draw: float
+    implied_away: float
+
+
 def get_fixture(fixture_id: int) -> FixtureRow | None:
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -123,3 +129,54 @@ def get_live_state(fixture_id: int) -> LiveStateRow | None:
             return None
         keys = ("state", "home_goals", "away_goals", "updated_at")
         return dict(zip(keys, row))  # type: ignore[return-value]
+
+
+def get_odds(fixture_id: int) -> OddsRow | None:
+    """Reads the latest de-vigged odds ingestor-go's odds poller wrote (see
+    ingestor-go/internal/store/postgres.go's odds table). Returns None if
+    the fixture hasn't been matched to an odds event yet."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT implied_home, implied_draw, implied_away
+            FROM odds
+            WHERE fixture_id = %s
+            """,
+            (fixture_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        # Postgres NUMERIC comes back as decimal.Decimal, which can't be
+        # mixed with the plain floats model.predict_proba() returns.
+        keys = ("implied_home", "implied_draw", "implied_away")
+        return dict(zip(keys, (float(v) for v in row)))  # type: ignore[return-value]
+
+
+def insert_edge(
+    fixture_id: int,
+    model_probs: dict,
+    market_probs: dict,
+    edge: dict,
+    flagged: bool,
+) -> None:
+    """Appends a snapshot of model vs. market probabilities to `edges`, so
+    Phase 6's backtest module has real history to grade against outcomes
+    (PROJECT_SPEC.md Phase 4)."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO edges (
+                fixture_id, model_home, model_draw, model_away,
+                market_home, market_draw, market_away,
+                edge_home, edge_draw, edge_away, flagged
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                fixture_id,
+                model_probs["home_win"], model_probs["draw"], model_probs["away_win"],
+                market_probs["home_win"], market_probs["draw"], market_probs["away_win"],
+                edge["home_win"], edge["draw"], edge["away_win"],
+                flagged,
+            ),
+        )

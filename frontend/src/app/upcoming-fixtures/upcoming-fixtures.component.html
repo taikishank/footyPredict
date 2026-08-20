@@ -2,8 +2,8 @@
   <div class="mx-auto max-w-3xl">
     <h1 class="text-2xl font-semibold">LiveEdge — Upcoming Fixtures</h1>
     <p class="mt-1 text-sm text-slate-400">
-      Fixtures kicking off in the next few days, with the model's pre-match win probability.
-      Odds and edge columns aren't available yet - they land with the Odds API integration.
+      Fixtures kicking off in the next few days, with the model's pre-match win probability
+      alongside the bookmaker-implied market probability and the edge between them.
     </p>
 
     @if (fixturesService.status() === 'loading') {
@@ -21,7 +21,12 @@
     @if (fixturesService.fixtures().length > 0) {
       <div class="mt-6 divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-950/40">
         @for (fx of fixturesService.fixtures(); track fx.fixture_id) {
-          <div class="grid grid-cols-[1fr_14rem_8rem] items-center gap-4 px-5 py-4">
+          <div
+            class="grid grid-cols-[1fr_10rem_10rem_8rem] items-center gap-4 px-5 py-4"
+            [class.bg-amber-950/30]="fx.flagged"
+            [class.border-l-2]="fx.flagged"
+            [class.border-amber-500]="fx.flagged"
+          >
             <div class="min-w-0">
               <div class="font-medium">{{ fx.home_team }} vs {{ fx.away_team }}</div>
               <div class="mt-0.5 text-xs text-slate-500">
@@ -39,7 +44,26 @@
               } @else {
                 <div class="text-slate-500">insufficient history</div>
               }
-              <div class="mt-0.5 text-xs text-slate-600">odds/edge: not yet available</div>
+              <div class="mt-0.5 text-xs text-slate-600">model</div>
+            </div>
+
+            <div class="text-right text-sm">
+              @if (fx.market; as market) {
+                <div class="text-slate-300">
+                  H {{ market.home_win * 100 | number: '1.0-0' }}% &middot;
+                  D {{ market.draw * 100 | number: '1.0-0' }}% &middot;
+                  A {{ market.away_win * 100 | number: '1.0-0' }}%
+                </div>
+                @if (fx.edge; as edge) {
+                  <div class="mt-0.5 text-xs" [class.text-amber-400]="fx.flagged" [class.text-slate-600]="!fx.flagged">
+                    edge H {{ edge.home_win * 100 | number: '1.0-0' }}pp &middot;
+                    D {{ edge.draw * 100 | number: '1.0-0' }}pp &middot;
+                    A {{ edge.away_win * 100 | number: '1.0-0' }}pp
+                  </div>
+                }
+              } @else {
+                <div class="text-slate-600">no odds match yet</div>
+              }
             </div>
 
             <button

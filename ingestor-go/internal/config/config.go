@@ -36,6 +36,13 @@ type Config struct {
 	// not-yet-started fixtures on each cycle - matches the dashboard's
 	// Upcoming tab window (PROJECT_SPEC.md Phase 4).
 	UpcomingWindowDays int
+
+	OddsAPIKey string
+	// OddsPollInterval controls how often the odds ticker triggers a pull
+	// cycle. The Odds API's free tier is metered per call (~500/month) and
+	// each cycle costs one call per tracked league, so this defaults much
+	// less frequent than the other pollers.
+	OddsPollInterval time.Duration
 }
 
 // maxLivePollsPerHour is a hard ceiling on how often the live poller may
@@ -80,6 +87,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	oddsPollInterval, err := durationEnv("ODDS_POLL_INTERVAL", 8*time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		SportmonksAPIKey:     apiKey,
 		PostgresURL:          pgURL,
@@ -89,6 +101,8 @@ func Load() (Config, error) {
 		LivePollInterval:     livePollInterval(),
 		UpcomingPollInterval: upcomingPollInterval,
 		UpcomingWindowDays:   upcomingWindowDays,
+		OddsAPIKey:           os.Getenv("ODDS_API_KEY"),
+		OddsPollInterval:     oddsPollInterval,
 	}, nil
 }
 

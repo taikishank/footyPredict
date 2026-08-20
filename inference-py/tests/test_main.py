@@ -179,6 +179,7 @@ def test_list_upcoming_fixtures(client, monkeypatch):
     monkeypatch.setattr(
         model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
+    monkeypatch.setattr(db, "get_odds", lambda fixture_id: None)
 
     resp = client.get("/fixtures/upcoming")
     assert resp.status_code == 200
@@ -187,8 +188,71 @@ def test_list_upcoming_fixtures(client, monkeypatch):
     assert body["window_days"] == 3
     assert [f["fixture_id"] for f in body["fixtures"]] == [123, 456]
     assert body["fixtures"][0]["probabilities"]["home_win"] == 0.5
+    assert body["fixtures"][0]["market"] is None
+    assert body["fixtures"][0]["edge"] is None
+    assert body["fixtures"][0]["flagged"] is False
     assert body["fixtures"][1]["probabilities"] is None
     assert body["fixtures"][1]["model_version"] is None
+
+
+def test_list_upcoming_fixtures_shows_odds_despite_not_enough_history(client, monkeypatch):
+    monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
+
+    def _raise_not_enough(fixture_id):
+        raise NotEnoughHistoryError(team_id=1, n_available=2)
+
+    monkeypatch.setattr(main, "build_match_features", _raise_not_enough)
+    monkeypatch.setattr(
+        db,
+        "get_odds",
+        lambda fixture_id: {"implied_home": 0.42, "implied_draw": 0.31, "implied_away": 0.27},
+    )
+
+    resp = client.get("/fixtures/upcoming")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    fixture = body["fixtures"][0]
+    assert fixture["probabilities"] is None
+    assert fixture["model_version"] is None
+    assert fixture["market"] == {"home_win": 0.42, "draw": 0.31, "away_win": 0.27}
+    assert fixture["edge"] is None
+    assert fixture["flagged"] is False
+
+
+def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
+    monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
+    monkeypatch.setattr(
+        main,
+        "build_match_features",
+        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+    )
+    monkeypatch.setattr(
+        model, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+    )
+    monkeypatch.setattr(
+        db,
+        "get_odds",
+        lambda fixture_id: {"implied_home": 0.5, "implied_draw": 0.28, "implied_away": 0.22},
+    )
+    inserted = {}
+    monkeypatch.setattr(
+        db,
+        "insert_edge",
+        lambda fixture_id, model_probs, market_probs, edge, flagged: inserted.update(
+            fixture_id=fixture_id, flagged=flagged
+        ),
+    )
+
+    resp = client.get("/fixtures/upcoming")
+    assert resp.status_code == 200
+    fx = resp.json()["fixtures"][0]
+
+    assert fx["market"] == {"home_win": 0.5, "draw": 0.28, "away_win": 0.22}
+    assert fx["edge"]["home_win"] == pytest.approx(0.1)
+    # |0.1| >= EDGE_FLAG_THRESHOLD (0.05 default), so this should be flagged.
+    assert fx["flagged"] is True
+    assert inserted == {"fixture_id": 123, "flagged": True}
 
 
 def test_ws_live_prediction_closes_when_fixture_missing(client, monkeypatch):

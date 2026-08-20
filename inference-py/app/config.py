@@ -37,3 +37,7 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
+# Minimum |model_prob - market_prob| (on any one outcome) for /fixtures/upcoming
+# to flag a fixture as an edge worth surfacing (PROJECT_SPEC.md Phase 4).
+EDGE_FLAG_THRESHOLD = float(os.environ.get("EDGE_FLAG_THRESHOLD", "0.05"))

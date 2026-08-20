@@ -33,10 +33,16 @@ class UpcomingFixture(BaseModel):
     home_team: str
     away_team: str
     # None when the team(s) don't have enough history yet for a prediction
-    # (NotEnoughHistoryError) - odds/edge fields aren't wired up until the
-    # Odds API integration lands (PROJECT_SPEC.md Phase 4).
+    # (NotEnoughHistoryError).
     probabilities: Probabilities | None
     model_version: str | None
+    # market is None when the odds poller hasn't matched this fixture to a
+    # bookmaker event yet. edge is additionally None when probabilities is
+    # None, since it requires a model prediction to compare against
+    # (PROJECT_SPEC.md Phase 4).
+    market: Probabilities | None = None
+    edge: Probabilities | None = None
+    flagged: bool = False
 
 
 class UpcomingFixturesResponse(BaseModel):
