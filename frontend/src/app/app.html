@@ -1,5 +1,9 @@
 <div class="bg-slate-900">
-  <nav class="mx-auto flex max-w-3xl gap-2 px-6 pt-6">
+  <p class="mx-auto max-w-3xl px-6 pt-6 text-xs text-slate-500">
+    Model: {{ modelVersion() ?? 'not yet known' }}
+  </p>
+
+  <nav class="mx-auto flex max-w-3xl gap-2 px-6 pt-2">
     <button
       type="button"
       class="rounded-md px-4 py-2 text-sm font-medium"
