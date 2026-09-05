@@ -7,7 +7,7 @@ from feature_lib import MIN_WINDOW, extract_team_stats, team_form
 
 RAW_DIR = Path(__file__).parent / "data" / "raw"
 FEATURES_DIR = Path(__file__).parent / "data" / "features"
-OUT_PATH = FEATURES_DIR / "2000_window5_8.csv"
+OUT_PATH = FEATURES_DIR / "2000_window3_8.csv"
 
 FINAL_SCORE_TYPE_ID = 1525
 GOALS_STAT_TYPE_ID = 52

@@ -28,10 +28,10 @@ from app.schemas import (
     UpcomingFixturesResponse,
 )
 
-# How often the WS stream re-reads live_match_state and re-sends if changed.
-# ingestor-go's live poller writes to that table on its own interval (see
+# How often the WS stream re-reads live match state (DynamoDB) and re-sends
+# if changed. ingestor-go's live poller writes it on its own interval (see
 # ingestor-go/internal/live/service.go); this just needs to be frequent
-# enough that dashboard updates feel live without hammering Postgres.
+# enough that dashboard updates feel live without hammering DynamoDB.
 _LIVE_STREAM_POLL_SECONDS = 4
 
 # Matches the dashboard's Upcoming tab window (PROJECT_SPEC.md Phase 4).
@@ -183,8 +183,8 @@ def _market_and_edge(
 
 @app.websocket("/ws/predictions/{fixture_id}/live")
 async def stream_live_prediction(websocket: WebSocket, fixture_id: int) -> None:
-    """Pushes a new LivePredictionResponse whenever live_match_state changes
-    for `fixture_id`, polling Postgres every _LIVE_STREAM_POLL_SECONDS. There's
+    """Pushes a new LivePredictionResponse whenever live match state changes
+    for `fixture_id`, polling DynamoDB every _LIVE_STREAM_POLL_SECONDS. There's
     no DB change-notification wired up (see PROJECT_SPEC.md Phase 3) so this
     is a poll-and-diff loop rather than a true push."""
     await websocket.accept()

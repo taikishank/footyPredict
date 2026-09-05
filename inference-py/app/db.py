@@ -1,16 +1,22 @@
-"""Postgres access for the inference service - reads the `fixtures` table
-that ingestor-go writes to (see ingestor-go/internal/store/postgres.go)."""
+"""Postgres + DynamoDB access for the inference service - reads the
+`fixtures` table (Postgres) and live match state (DynamoDB) that
+ingestor-go writes to (see ingestor-go/internal/store/postgres.go and
+ingestor-go/internal/live/dynamo_store.go)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypedDict
 
+import boto3
 from psycopg_pool import ConnectionPool
 
-from app.config import POSTGRES_URL
+from app.config import AWS_REGION, DYNAMODB_TABLE_NAME, POSTGRES_URL
 from feature_lib import extract_team_stats
 
 pool = ConnectionPool(POSTGRES_URL, min_size=1, max_size=5, open=False)
+
+_dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
+_live_state_table = _dynamodb.Table(DYNAMODB_TABLE_NAME)
 
 
 class FixtureRow(TypedDict):
@@ -113,22 +119,19 @@ def list_upcoming_fixtures(start: datetime, end: datetime) -> list[FixtureRow]:
 
 def get_live_state(fixture_id: int) -> LiveStateRow | None:
     """Reads the latest polled live state ingestor-go's live poller wrote
-    (see ingestor-go/internal/store/postgres.go's live_match_state table).
-    Returns None if the fixture has never been polled as live."""
-    with pool.connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT state, home_goals, away_goals, updated_at
-            FROM live_match_state
-            WHERE fixture_id = %s
-            """,
-            (fixture_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None
-        keys = ("state", "home_goals", "away_goals", "updated_at")
-        return dict(zip(keys, row))  # type: ignore[return-value]
+    (see ingestor-go/internal/live/dynamo_store.go). Returns None if the
+    fixture has never been polled as live, or its item has aged out via
+    DynamoDB TTL (see infra/modules/dynamodb-live-state)."""
+    resp = _live_state_table.get_item(Key={"fixture_id": fixture_id})
+    item = resp.get("Item")
+    if item is None:
+        return None
+    return {
+        "state": item["state"],
+        "home_goals": int(item["home_goals"]),
+        "away_goals": int(item["away_goals"]),
+        "updated_at": datetime.fromtimestamp(int(item["updated_at"]), tz=timezone.utc),
+    }
 
 
 def get_odds(fixture_id: int) -> OddsRow | None:

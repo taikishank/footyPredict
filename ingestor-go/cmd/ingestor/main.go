@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/taikishank/liveedge/ingestor-go/internal/awsclients"
 	"github.com/taikishank/liveedge/ingestor-go/internal/config"
 	"github.com/taikishank/liveedge/ingestor-go/internal/ingest"
 	"github.com/taikishank/liveedge/ingestor-go/internal/live"
@@ -43,10 +44,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	dynamoClient, err := awsclients.NewDynamoDB(ctx, cfg.AWSRegion, cfg.DynamoDBEndpointURL)
+	if err != nil {
+		logger.Error("configuring dynamodb client", "error", err)
+		os.Exit(1)
+	}
+	sqsClient, err := awsclients.NewSQS(ctx, cfg.AWSRegion, cfg.SQSEndpointURL)
+	if err != nil {
+		logger.Error("configuring sqs client", "error", err)
+		os.Exit(1)
+	}
+	liveStates := live.NewDynamoStateStore(dynamoClient, cfg.LiveStateTableName)
+	livePublisher := live.NewSQSPublisher(sqsClient, cfg.LiveEventsQueueURL)
+
 	client := sportmonks.NewClient(cfg.SportmonksAPIKey)
 	svc := ingest.NewService(client, db, cfg.WindowDays, cfg.RecomputeCmd, logger)
 
-	liveSvc := live.NewService(client, db, live.NewLocalPublisher(logger), logger)
+	liveSvc := live.NewService(client, liveStates, livePublisher, logger)
 	upcomingSvc := upcoming.NewService(client, db, cfg.UpcomingWindowDays, logger)
 
 	logger.Info("ingestor starting",

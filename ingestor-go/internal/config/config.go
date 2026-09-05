@@ -43,6 +43,19 @@ type Config struct {
 	// each cycle costs one call per tracked league, so this defaults much
 	// less frequent than the other pollers.
 	OddsPollInterval time.Duration
+
+	AWSRegion string
+	// LiveStateTableName is the DynamoDB table the live poller upserts
+	// current match state to (infra/modules/dynamodb-live-state).
+	LiveStateTableName string
+	// LiveEventsQueueURL is the SQS queue the live poller publishes
+	// in-match events to (infra/modules/sqs-live-events).
+	LiveEventsQueueURL string
+	// DynamoDBEndpointURL and SQSEndpointURL override the default AWS
+	// endpoints, e.g. http://localhost:4566 for the LocalStack container in
+	// docker-compose.yml. Empty means "use real AWS".
+	DynamoDBEndpointURL string
+	SQSEndpointURL      string
 }
 
 // maxLivePollsPerHour is a hard ceiling on how often the live poller may
@@ -65,6 +78,21 @@ func Load() (Config, error) {
 	pgURL := os.Getenv("POSTGRES_URL")
 	if pgURL == "" {
 		return Config{}, fmt.Errorf("POSTGRES_URL is required")
+	}
+
+	awsRegion := os.Getenv("AWS_REGION")
+	if awsRegion == "" {
+		return Config{}, fmt.Errorf("AWS_REGION is required")
+	}
+
+	liveStateTable := os.Getenv("DYNAMODB_TABLE_NAME")
+	if liveStateTable == "" {
+		return Config{}, fmt.Errorf("DYNAMODB_TABLE_NAME is required")
+	}
+
+	eventsQueueURL := os.Getenv("SQS_QUEUE_URL")
+	if eventsQueueURL == "" {
+		return Config{}, fmt.Errorf("SQS_QUEUE_URL is required")
 	}
 
 	pollInterval, err := durationEnv("INGEST_POLL_INTERVAL", time.Hour)
@@ -103,6 +131,11 @@ func Load() (Config, error) {
 		UpcomingWindowDays:   upcomingWindowDays,
 		OddsAPIKey:           os.Getenv("ODDS_API_KEY"),
 		OddsPollInterval:     oddsPollInterval,
+		AWSRegion:            awsRegion,
+		LiveStateTableName:   liveStateTable,
+		LiveEventsQueueURL:   eventsQueueURL,
+		DynamoDBEndpointURL:  os.Getenv("AWS_ENDPOINT_URL_DYNAMODB"),
+		SQSEndpointURL:       os.Getenv("AWS_ENDPOINT_URL_SQS"),
 	}, nil
 }
 

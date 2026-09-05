@@ -1,19 +1,19 @@
 services:
-  postgres:
-    image: postgres:16-alpine
+  # Emulates DynamoDB + SQS for local dev (PROJECT_SPEC.md Phase 3), so
+  # iterating on the live poller doesn't touch real AWS or cost anything.
+  # Table/queue names and shapes mirror infra/modules/dynamodb-live-state
+  # and infra/modules/sqs-live-events - see localstack/init-aws.sh.
+  localstack:
+    image: localstack/localstack:3
     environment:
-      POSTGRES_DB: liveedge
-      POSTGRES_USER: liveedge
-      POSTGRES_PASSWORD: liveedge
+      SERVICES: dynamodb,sqs
+      DEFAULT_REGION: us-east-1
     ports:
-      - "5432:5432"
+      - "4566:4566"
     volumes:
-      - liveedge-postgres-data:/var/lib/postgresql/data
+      - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U liveedge -d liveedge"]
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 5s
       timeout: 5s
-      retries: 5
-
-volumes:
-  liveedge-postgres-data:
+      retries: 10

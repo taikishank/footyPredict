@@ -3,7 +3,7 @@
 (inference-py/app/features.py) so the two stay in lockstep.
 """
 
-MIN_WINDOW = 5
+MIN_WINDOW = 3
 MAX_WINDOW = 8
 
 # type_id -> feature name

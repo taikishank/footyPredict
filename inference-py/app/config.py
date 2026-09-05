@@ -16,6 +16,14 @@ if str(_ML_DIR) not in sys.path:
 
 POSTGRES_URL = os.environ["POSTGRES_URL"]
 
+# DynamoDB holds current live-match state (PROJECT_SPEC.md Phase 3), written
+# by ingestor-go's live poller (see ingestor-go/internal/live/dynamo_store.go)
+# and read by app/db.py's get_live_state(). AWS_ENDPOINT_URL_DYNAMODB is
+# picked up by boto3 itself when set (e.g. http://localhost:4566 for the
+# LocalStack container in docker-compose.yml) - no extra plumbing needed here.
+DYNAMODB_TABLE_NAME = os.environ["DYNAMODB_TABLE_NAME"]
+AWS_REGION = os.environ["AWS_REGION"]
+
 # Matches ml/train.py: it saves locally to ml/models/match_outcome_model.json
 # and uploads the same file to s3://{S3_BUCKET_MODELS}/{MODEL_S3_KEY}.
 S3_BUCKET_MODELS = os.environ.get("S3_BUCKET_MODELS", "")

@@ -13,7 +13,7 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import log_loss
 from xgboost import XGBClassifier
 
-FEATURES_PATH = Path(__file__).parent / "data" / "features" / "2000_window5_8.csv"
+FEATURES_PATH = Path(__file__).parent / "data" / "features" / "2000_window3_8.csv"
 CALIBRATION_PLOT_PATH = Path(__file__).parent / "models" / "calibration_curve.png"
 MODEL_LOCAL_PATH = Path(__file__).parent / "models" / "match_outcome_model.json"
 
@@ -101,13 +101,13 @@ def main() -> None:
         calibration_path = plot_calibration(y_val, probs)
         mlflow.log_artifact(str(calibration_path))
 
-        mlflow.xgboost.log_model(model, name="window5_8")
+        mlflow.xgboost.log_model(model, name="window3_8")
 
         run_id = mlflow.active_run().info.run_id
         MODEL_LOCAL_PATH.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(MODEL_LOCAL_PATH))
 
-        s3_key = "2000_v1/model.json"
+        s3_key = "2000_v1_win3-8/model.json"
 
         boto3.client("s3").upload_file(str(MODEL_LOCAL_PATH), S3_BUCKET_MODELS, s3_key)
         mlflow.log_param("s3_key", s3_key)
