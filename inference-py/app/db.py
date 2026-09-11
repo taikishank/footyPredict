@@ -27,6 +27,7 @@ class FixtureRow(TypedDict):
     away_id: int
     home_name: str
     away_name: str
+    season_id: int
 
 
 class TeamResultRow(TypedDict):
@@ -52,7 +53,8 @@ def get_fixture(fixture_id: int) -> FixtureRow | None:
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT fixture_id, league_id, starting_at, home_id, away_id, home_name, away_name
+            SELECT fixture_id, league_id, starting_at, home_id, away_id, home_name, away_name,
+                   (raw ->> 'season_id')::bigint AS season_id
             FROM fixtures
             WHERE fixture_id = %s
             """,
@@ -63,24 +65,34 @@ def get_fixture(fixture_id: int) -> FixtureRow | None:
             return None
         keys = (
             "fixture_id", "league_id", "starting_at",
-            "home_id", "away_id", "home_name", "away_name",
+            "home_id", "away_id", "home_name", "away_name", "season_id",
         )
         return dict(zip(keys, row))  # type: ignore[return-value]
 
 
-def get_team_history(team_id: int, before: datetime, limit: int) -> list[TeamResultRow]:
-    """Most-recent-last list of a team's prior results strictly before
-    `before`, for feeding into feature_lib.team_form()."""
+def get_team_history(
+    team_id: int, before: datetime, limit: int, season_id: int
+) -> list[TeamResultRow]:
+    """Most-recent-last list of a team's prior *completed* results strictly
+    before `before` within the given season, for feeding into
+    feature_lib.team_form(). Scoped to `season_id` so history never bleeds
+    back into a previous season - a team's form should only reflect the
+    season it's currently playing, so a fresh season starts with no
+    predictions until MIN_WINDOW matches have been played in it, by design.
+    Rows without a final score (e.g. still-unbackfilled upcoming-fixture
+    placeholders) are excluded so MIN_WINDOW only counts usable history."""
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             SELECT home_id, home_goals, away_goals, raw
             FROM fixtures
             WHERE (home_id = %s OR away_id = %s) AND starting_at < %s
+              AND home_goals IS NOT NULL AND away_goals IS NOT NULL
+              AND (raw ->> 'season_id')::bigint = %s
             ORDER BY starting_at DESC
             LIMIT %s
             """,
-            (team_id, team_id, before, limit),
+            (team_id, team_id, before, season_id, limit),
         )
         rows = cur.fetchall()
 

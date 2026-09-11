@@ -32,11 +32,16 @@ def build_match_features(fixture_id: int) -> MatchFeatures | None:
     if fixture is None:
         return None
 
-    home_history = get_team_history(fixture["home_id"], fixture["starting_at"], MAX_WINDOW)
+    season_id = fixture["season_id"]
+    home_history = get_team_history(
+        fixture["home_id"], fixture["starting_at"], MAX_WINDOW, season_id
+    )
     if len(home_history) < MIN_WINDOW:
         raise NotEnoughHistoryError(fixture["home_id"], len(home_history))
 
-    away_history = get_team_history(fixture["away_id"], fixture["starting_at"], MAX_WINDOW)
+    away_history = get_team_history(
+        fixture["away_id"], fixture["starting_at"], MAX_WINDOW, season_id
+    )
     if len(away_history) < MIN_WINDOW:
         raise NotEnoughHistoryError(fixture["away_id"], len(away_history))
 
