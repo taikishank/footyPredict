@@ -292,12 +292,30 @@ it read as complete. Completeness is now counted over played fixtures only
 | Bundesliga 2024/25 | 305 / 306 | 1 awarded | 2 teams short 1 |
 | Ligue 1 2025/26 | 305 / 306 | 1 abandoned | 2 teams short 1 |
 
-**Recommendation: omit Ligue 1 2019/20 entirely.** Every team lost 10–11
-fixtures, so every rolling form window in that season silently spans a
-three-month void. The other three are one missing match each, affecting two
-teams' windows for a few fixtures — worth knowing, not worth dropping a season
-over, though the simplest safe handling is to drop the affected teams' fixtures
-immediately following the abandoned match.
+**Decision: keep Ligue 1 2019/20's played fixtures.** An earlier draft here
+recommended dropping the season outright, which was over-cautious. The 279
+matches that were played are ordinary, fully-recorded fixtures; the season
+ending abruptly doesn't retract their value.
+
+It also truncates cleanly, which is what makes this safe. Last played fixture
+2020-03-08, first cancelled one 2020-03-13, and **zero played fixtures fall
+after the first cancellation** — so there is no interleaving of played and
+missing matches to reason about. Each team got through 27–28 of its 38.
+
+No filter code is needed for this: `parse_fixture()` in `build_features.py`
+already returns None for a fixture with no score and no goals statistic, so the
+101 cancelled/postponed rows are skipped and the 279 played ones are kept.
+Verified by running it over the season.
+
+The hazard that remains is not inside that season but at the start of the next
+one: a team's first 2020/21 form window reaches back across the five-month void
+to March 2020. That's comparable in length to a normal close-season break, which
+every August fixture already has, so it's benign rather than special — but it
+argues for giving the challenger a *days since last match* feature, so staleness
+is something the model can see rather than something it silently averages over.
+
+The other three affected seasons are one missing match each, touching two teams'
+windows for a few fixtures — worth knowing, not worth acting on.
 
 No season has a team quietly short by a handful of fixtures beyond these, which
 was the specific failure mode worth hunting: too few absences to notice in
@@ -328,3 +346,22 @@ Nothing is missing: postponed matches were reassigned to a different
 every per-team count are correct, these are reported as informational rather
 than alerts. Round *numbers* aren't in the payload at all, only ids, so rounds
 are ordered by first kickoff and identified by position.
+
+---
+
+## Promoted teams are invisible for their first three fixtures
+
+Refreshing the stale cache added 147 feature rows for 149 refreshed fixtures.
+The two that produced nothing both involve Elversberg, newly promoted to the
+Bundesliga: their 2. Bundesliga history isn't in the cache (the subscription
+covers the top five leagues only), so they sit below `MIN_WINDOW = 3` prior
+matches and `build_features.py` correctly skips those fixtures until the history
+exists. Working as designed, not a gap.
+
+It matters for the challenger, though, and more sharply than at team level. A
+promoted side arrives with no team history *and* a squad of players with no
+`player_form` history in our data — which is exactly the case section 5 flags as
+needing league-and-position-average imputation rather than the team-level
+all-or-nothing `NotEnoughHistoryError` gate. Promotion guarantees this happens
+every August, to three clubs per league, so it's a main path rather than an edge
+case.
