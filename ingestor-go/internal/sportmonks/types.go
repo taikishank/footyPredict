@@ -84,8 +84,20 @@ type Statistic struct {
 }
 
 type fixturesResponse struct {
-	Data      []json.RawMessage `json:"data"`
-	RateLimit *RateLimit        `json:"rate_limit"`
+	Data       []json.RawMessage `json:"data"`
+	Pagination *Pagination       `json:"pagination"`
+	RateLimit  *RateLimit        `json:"rate_limit"`
+}
+
+// Pagination mirrors SportMonks v3's top-level (not meta-nested) pagination
+// object. NextPage is a full URL but omits api_token, so callers should page
+// by incrementing their own "page" query param rather than following it
+// as-is - see Client.fetchBetween.
+type Pagination struct {
+	Count       int  `json:"count"`
+	PerPage     int  `json:"per_page"`
+	HasMore     bool `json:"has_more"`
+	CurrentPage int  `json:"current_page"`
 }
 
 // RateLimit mirrors the rate_limit object SportMonks includes on every v3

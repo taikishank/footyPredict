@@ -71,6 +71,60 @@ func TestFetchFinishedBetween_FiltersUnfinishedAndSendsExpectedRequest(t *testin
 	}
 }
 
+func TestFetchFinishedBetween_FollowsPagination(t *testing.T) {
+	var gotPages []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		gotPages = append(gotPages, page)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch page {
+		case "", "1":
+			w.Write([]byte(`{
+				"data": [
+					{"id": 1, "league_id": 8, "starting_at": "2026-01-10 15:00:00",
+					 "state": {"short_name": "FT"}, "participants": [], "scores": [], "statistics": []}
+				],
+				"pagination": {"count": 1, "per_page": 1, "has_more": true, "current_page": 1}
+			}`))
+		case "2":
+			w.Write([]byte(`{
+				"data": [
+					{"id": 2, "league_id": 8, "starting_at": "2026-01-11 15:00:00",
+					 "state": {"short_name": "FT"}, "participants": [], "scores": [], "statistics": []}
+				],
+				"pagination": {"count": 1, "per_page": 1, "has_more": false, "current_page": 2}
+			}`))
+		default:
+			t.Fatalf("unexpected page %q requested", page)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key")
+	client.baseURL = server.URL
+	client.httpClient = server.Client()
+
+	start := time.Date(2026, 1, 8, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 1, 11, 0, 0, 0, 0, time.UTC)
+
+	fixtures, err := client.FetchFinishedBetween(context.Background(), start, end)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fixtures) != 2 {
+		t.Fatalf("got %d fixtures, want 2 (one from each page)", len(fixtures))
+	}
+	if fixtures[0].ID != 1 || fixtures[1].ID != 2 {
+		t.Fatalf("got fixture ids %d,%d, want 1,2", fixtures[0].ID, fixtures[1].ID)
+	}
+	if len(gotPages) != 2 || gotPages[1] != "2" {
+		t.Fatalf("got page requests %v, want [\"1\" or \"\", \"2\"]", gotPages)
+	}
+}
+
 func TestFetchUpcomingBetween_FiltersToNotStarted(t *testing.T) {
 	var gotPath string
 

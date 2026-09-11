@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -86,54 +87,72 @@ func (c *Client) FetchUpcomingBetween(ctx context.Context, start, end time.Time)
 	return upcoming, nil
 }
 
+// maxFetchPages caps how many pages fetchBetween will follow for a single
+// date range, as a safety net against an unexpected has_more:true loop
+// (malformed/unexpected API response) rather than a real limit on how much
+// data a normal window needs.
+const maxFetchPages = 100
+
 // fetchBetween calls the /fixtures/between/{start}/{end} endpoint and
 // returns every fixture in the window, unfiltered by state - callers narrow
-// down to the states they care about (finished, upcoming, ...).
+// down to the states they care about (finished, upcoming, ...). SportMonks
+// paginates this endpoint (25 fixtures/page by default) with a top-level
+// (not meta-nested) `pagination` object - a single call silently truncates
+// to page 1 without following `has_more`, so this pages through until
+// has_more is false.
 func (c *Client) fetchBetween(ctx context.Context, start, end time.Time) ([]Fixture, error) {
-	if c.rateLimitExhausted() {
-		return nil, ErrRateLimited
-	}
+	var fixtures []Fixture
 
-	url := fmt.Sprintf("%s/fixtures/between/%s/%s", c.baseURL, start.Format(dateLayout), end.Format(dateLayout))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
-	}
-	q := req.URL.Query()
-	q.Set("api_token", c.apiKey)
-	q.Set("include", "participants;scores;statistics;state")
-	req.URL.RawQuery = q.Encode()
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("calling sportmonks: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sportmonks returned %d: %s", resp.StatusCode, body)
-	}
-
-	var parsed fixturesResponse
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
-	}
-	c.updateRateLimit(parsed.RateLimit)
-
-	fixtures := make([]Fixture, 0, len(parsed.Data))
-	for _, raw := range parsed.Data {
-		var f Fixture
-		if err := json.Unmarshal(raw, &f); err != nil {
-			return nil, fmt.Errorf("decoding fixture: %w", err)
+	for page := 1; page <= maxFetchPages; page++ {
+		if c.rateLimitExhausted() {
+			return nil, ErrRateLimited
 		}
-		f.Raw = raw
-		fixtures = append(fixtures, f)
+
+		url := fmt.Sprintf("%s/fixtures/between/%s/%s", c.baseURL, start.Format(dateLayout), end.Format(dateLayout))
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("building request: %w", err)
+		}
+		q := req.URL.Query()
+		q.Set("api_token", c.apiKey)
+		q.Set("include", "participants;scores;statistics;state")
+		q.Set("page", strconv.Itoa(page))
+		req.URL.RawQuery = q.Encode()
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("calling sportmonks: %w", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("reading response body: %w", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("sportmonks returned %d: %s", resp.StatusCode, body)
+		}
+
+		var parsed fixturesResponse
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			return nil, fmt.Errorf("decoding response: %w", err)
+		}
+		c.updateRateLimit(parsed.RateLimit)
+
+		for _, raw := range parsed.Data {
+			var f Fixture
+			if err := json.Unmarshal(raw, &f); err != nil {
+				return nil, fmt.Errorf("decoding fixture: %w", err)
+			}
+			f.Raw = raw
+			fixtures = append(fixtures, f)
+		}
+
+		if parsed.Pagination == nil || !parsed.Pagination.HasMore {
+			break
+		}
 	}
+
 	return fixtures, nil
 }
 
