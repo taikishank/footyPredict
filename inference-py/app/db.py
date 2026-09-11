@@ -47,6 +47,9 @@ class OddsRow(TypedDict):
     implied_home: float
     implied_draw: float
     implied_away: float
+    home_price: float
+    draw_price: float
+    away_price: float
 
 
 def get_fixture(fixture_id: int) -> FixtureRow | None:
@@ -153,7 +156,8 @@ def get_odds(fixture_id: int) -> OddsRow | None:
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            SELECT implied_home, implied_draw, implied_away
+            SELECT implied_home, implied_draw, implied_away,
+                   home_price, draw_price, away_price
             FROM odds
             WHERE fixture_id = %s
             """,
@@ -164,7 +168,10 @@ def get_odds(fixture_id: int) -> OddsRow | None:
             return None
         # Postgres NUMERIC comes back as decimal.Decimal, which can't be
         # mixed with the plain floats model.predict_proba() returns.
-        keys = ("implied_home", "implied_draw", "implied_away")
+        keys = (
+            "implied_home", "implied_draw", "implied_away",
+            "home_price", "draw_price", "away_price",
+        )
         return dict(zip(keys, (float(v) for v in row)))  # type: ignore[return-value]
 
 
@@ -174,18 +181,23 @@ def insert_edge(
     market_probs: dict,
     edge: dict,
     flagged: bool,
+    prices: dict,
 ) -> None:
     """Appends a snapshot of model vs. market probabilities to `edges`, so
-    Phase 6's backtest module has real history to grade against outcomes
-    (PROJECT_SPEC.md Phase 4)."""
+    backtest/grade_calls.py has real history to grade against outcomes
+    (PROJECT_SPEC.md Phase 4). `prices` carries the decimal odds at this
+    snapshot (home_win/draw/away_win keys) so a graded prediction_call can
+    later simulate P&L against what was actually available, not the closing
+    price."""
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO edges (
                 fixture_id, model_home, model_draw, model_away,
                 market_home, market_draw, market_away,
-                edge_home, edge_draw, edge_away, flagged
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                edge_home, edge_draw, edge_away, flagged,
+                home_price, draw_price, away_price
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 fixture_id,
@@ -193,5 +205,6 @@ def insert_edge(
                 market_probs["home_win"], market_probs["draw"], market_probs["away_win"],
                 edge["home_win"], edge["draw"], edge["away_win"],
                 flagged,
+                prices["home_win"], prices["draw"], prices["away_win"],
             ),
         )

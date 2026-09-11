@@ -205,7 +205,10 @@ def test_list_upcoming_fixtures_shows_odds_despite_not_enough_history(client, mo
     monkeypatch.setattr(
         db,
         "get_odds",
-        lambda fixture_id: {"implied_home": 0.42, "implied_draw": 0.31, "implied_away": 0.27},
+        lambda fixture_id: {
+            "implied_home": 0.42, "implied_draw": 0.31, "implied_away": 0.27,
+            "home_price": 2.3, "draw_price": 3.4, "away_price": 4.1,
+        },
     )
 
     resp = client.get("/fixtures/upcoming")
@@ -233,14 +236,17 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
     monkeypatch.setattr(
         db,
         "get_odds",
-        lambda fixture_id: {"implied_home": 0.5, "implied_draw": 0.28, "implied_away": 0.22},
+        lambda fixture_id: {
+            "implied_home": 0.5, "implied_draw": 0.28, "implied_away": 0.22,
+            "home_price": 2.0, "draw_price": 3.6, "away_price": 4.5,
+        },
     )
     inserted = {}
     monkeypatch.setattr(
         db,
         "insert_edge",
-        lambda fixture_id, model_probs, market_probs, edge, flagged: inserted.update(
-            fixture_id=fixture_id, flagged=flagged
+        lambda fixture_id, model_probs, market_probs, edge, flagged, prices: inserted.update(
+            fixture_id=fixture_id, flagged=flagged, prices=prices
         ),
     )
 
@@ -252,7 +258,11 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
     assert fx["edge"]["home_win"] == pytest.approx(0.1)
     # |0.1| >= EDGE_FLAG_THRESHOLD (0.05 default), so this should be flagged.
     assert fx["flagged"] is True
-    assert inserted == {"fixture_id": 123, "flagged": True}
+    assert inserted == {
+        "fixture_id": 123,
+        "flagged": True,
+        "prices": {"home_win": 2.0, "draw": 3.6, "away_win": 4.5},
+    }
 
 
 def test_ws_live_prediction_closes_when_fixture_missing(client, monkeypatch):

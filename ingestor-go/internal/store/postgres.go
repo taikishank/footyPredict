@@ -3,9 +3,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/taikishank/liveedge/ingestor-go/internal/ingest"
@@ -76,6 +78,38 @@ CREATE TABLE IF NOT EXISTS edges (
 	edge_away    NUMERIC NOT NULL,
 	flagged      BOOLEAN NOT NULL,
 	PRIMARY KEY (fixture_id, computed_at)
+);
+
+-- Prices at the moment the edge was computed, so a graded prediction_call
+-- can simulate P&L against what was actually available rather than the
+-- (possibly since-moved) closing price in odds. Added after edges shipped,
+-- hence ALTER rather than inline columns; nullable since older rows predate
+-- this and will just be excluded from P&L.
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS home_price NUMERIC;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS draw_price NUMERIC;
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS away_price NUMERIC;
+
+-- prediction_calls is the graded scorecard: one row per fixture the model
+-- ever flagged an edge on, selecting the flagged edges snapshot closest to
+-- kickoff as "the call" (see backtest/grade_calls.py) and recording what
+-- actually happened. edges stays a pure append-only log; this is derived
+-- from it once a fixture's result is known.
+CREATE TABLE IF NOT EXISTS prediction_calls (
+	fixture_id      BIGINT PRIMARY KEY REFERENCES fixtures(fixture_id),
+	edge_computed_at TIMESTAMPTZ NOT NULL,
+	call_side       TEXT NOT NULL CHECK (call_side IN ('home_win', 'draw', 'away_win')),
+	model_prob      NUMERIC NOT NULL,
+	market_prob     NUMERIC NOT NULL,
+	edge            NUMERIC NOT NULL,
+	price           NUMERIC,
+	actual_result   TEXT NOT NULL CHECK (actual_result IN ('home_win', 'draw', 'away_win')),
+	correct         BOOLEAN NOT NULL,
+	brier_score     NUMERIC NOT NULL,
+	market_brier_score NUMERIC NOT NULL,
+	staked_units    NUMERIC NOT NULL DEFAULT 1,
+	pnl_units       NUMERIC,
+	graded_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+	FOREIGN KEY (fixture_id, edge_computed_at) REFERENCES edges (fixture_id, computed_at)
 );
 `
 
@@ -152,6 +186,27 @@ func (s *Store) UpsertFixtures(ctx context.Context, fixtures []ingest.ParsedFixt
 		return 0, fmt.Errorf("committing transaction: %w", err)
 	}
 	return changed, nil
+}
+
+// OldestUnresolvedStartingAt returns the starting_at of the oldest fixture
+// that has already kicked off (starting_at < before) but never got a result
+// backfilled (home_goals IS NULL) - i.e. a gap UpsertFixtures's rolling
+// window has already moved past. Returns nil if there's no such gap.
+func (s *Store) OldestUnresolvedStartingAt(ctx context.Context, before time.Time) (*time.Time, error) {
+	var startingAt time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT starting_at FROM fixtures
+		WHERE starting_at < $1 AND home_goals IS NULL
+		ORDER BY starting_at ASC
+		LIMIT 1
+	`, before).Scan(&startingAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("querying oldest unresolved fixture: %w", err)
+	}
+	return &startingAt, nil
 }
 
 // UpsertUpcomingFixtures seeds fixtures rows ahead of kickoff, with no

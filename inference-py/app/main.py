@@ -9,6 +9,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -36,6 +37,8 @@ _LIVE_STREAM_POLL_SECONDS = 4
 
 # Matches the dashboard's Upcoming tab window (PROJECT_SPEC.md Phase 4).
 _UPCOMING_WINDOW = timedelta(days=3)
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -106,28 +109,16 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
         try:
             features = build_match_features(row["fixture_id"])
         except NotEnoughHistoryError:
-            odds_row = db.get_odds(row["fixture_id"])
-            market = (
-                Probabilities(
-                    home_win=odds_row["implied_home"],
-                    draw=odds_row["implied_draw"],
-                    away_win=odds_row["implied_away"],
-                )
-                if odds_row is not None
-                else None
+            fixtures.append(_fixture_without_prediction(row))
+            continue
+        except Exception:
+            # A single fixture's malformed/incomplete data (e.g. a stale
+            # unbackfilled history row) shouldn't 500 the whole list - log
+            # and fall back to odds-only, same as NotEnoughHistoryError.
+            logger.exception(
+                "build_match_features failed for fixture_id=%s", row["fixture_id"]
             )
-            fixtures.append(
-                UpcomingFixture(
-                    fixture_id=row["fixture_id"],
-                    league_id=row["league_id"],
-                    starting_at=row["starting_at"],
-                    home_team=row["home_name"],
-                    away_team=row["away_name"],
-                    probabilities=None,
-                    model_version=None,
-                    market=market,
-                )
-            )
+            fixtures.append(_fixture_without_prediction(row))
             continue
 
         if features is None:
@@ -151,8 +142,38 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
             )
         )
 
+    # Flagged (significant model-vs-market edge) fixtures surface first,
+    # soonest kickoff first within each group.
+    fixtures.sort(key=lambda fx: (not fx.flagged, fx.starting_at))
+
     return UpcomingFixturesResponse(
         generated_at=now, window_days=_UPCOMING_WINDOW.days, fixtures=fixtures
+    )
+
+
+def _fixture_without_prediction(row) -> UpcomingFixture:
+    """Builds an UpcomingFixture with no model prediction (insufficient
+    history, or the feature build failed) but still carries market odds
+    if available."""
+    odds_row = db.get_odds(row["fixture_id"])
+    market = (
+        Probabilities(
+            home_win=odds_row["implied_home"],
+            draw=odds_row["implied_draw"],
+            away_win=odds_row["implied_away"],
+        )
+        if odds_row is not None
+        else None
+    )
+    return UpcomingFixture(
+        fixture_id=row["fixture_id"],
+        league_id=row["league_id"],
+        starting_at=row["starting_at"],
+        home_team=row["home_name"],
+        away_team=row["away_name"],
+        probabilities=None,
+        model_version=None,
+        market=market,
     )
 
 
@@ -175,8 +196,13 @@ def _market_and_edge(
         outcome: model_probs[outcome] - market_probs[outcome] for outcome in model_probs
     }
     flagged = max(abs(v) for v in edge_probs.values()) >= EDGE_FLAG_THRESHOLD
+    prices = {
+        "home_win": odds_row["home_price"],
+        "draw": odds_row["draw_price"],
+        "away_win": odds_row["away_price"],
+    }
 
-    db.insert_edge(fixture_id, model_probs, market_probs, edge_probs, flagged)
+    db.insert_edge(fixture_id, model_probs, market_probs, edge_probs, flagged, prices)
 
     return Probabilities(**market_probs), Probabilities(**edge_probs), flagged
 
