@@ -57,29 +57,59 @@ def build_index() -> dict[str, list]:
     return index
 
 
-def sample_per_year(index: dict[str, list], per_year: int) -> dict[int, list[int]]:
-    by_year: dict[int, list[int]] = defaultdict(list)
-    for fixture_id, (starting_at, _) in sorted(index.items(), key=lambda kv: kv[1][0]):
+def sample_per_year(index: dict[str, list], per_year: int,
+                    years: list[int] | None = None,
+                    by_league: bool = False) -> dict[object, list[int]]:
+    """Spread the sample evenly across each year rather than taking the first N.
+
+    Taking the earliest N fixtures of a year samples one round of one or two
+    competitions, which is exactly the wrong shape for asking "is coverage thin
+    in this era" - a single league's reporting gap would read as a league-wide
+    cliff. Evenly-spaced picks (optionally split per league) make the answer
+    trustworthy enough to set a training window on.
+    """
+    grouped: dict[object, list[tuple[str, int]]] = defaultdict(list)
+    for fixture_id, (starting_at, league_id) in index.items():
         year = int(starting_at[:4])
-        if len(by_year[year]) < per_year:
-            by_year[year].append(int(fixture_id))
-    return dict(sorted(by_year.items()))
+        if years and year not in years:
+            continue
+        key = (year, league_id) if by_league else year
+        grouped[key].append((starting_at, int(fixture_id)))
+
+    sampled: dict[object, list[int]] = {}
+    for key, entries in grouped.items():
+        entries.sort()
+        if len(entries) <= per_year:
+            picks = entries
+        else:
+            step = len(entries) / per_year
+            picks = [entries[int(i * step)] for i in range(per_year)]
+        sampled[key] = [fixture_id for _, fixture_id in picks]
+    return dict(sorted(sampled.items(), key=str))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--per-year", type=int, default=4)
+    parser.add_argument("--per-year", type=int, default=4,
+                        help="fixtures to sample per group, spread across the year")
+    parser.add_argument("--years", type=str, default=None,
+                        help="comma-separated years to restrict to, e.g. 2014,2015,2016")
+    parser.add_argument("--by-league", action="store_true",
+                        help="group by (year, league) to catch a single league skewing a year")
+    parser.add_argument("--out", type=str, default=None, help="where to write the JSON report")
     args = parser.parse_args()
+    years = [int(y) for y in args.years.split(",")] if args.years else None
 
     index = build_index()
     print(f"indexed {len(index)} cached fixtures")
-    samples = sample_per_year(index, args.per_year)
+    samples = sample_per_year(index, args.per_year, years=years, by_league=args.by_league)
 
     session = requests.Session()
     session.params = {"api_token": os.environ["SPORTMONKS_API_KEY"]}
 
     report = {}
-    print(f"\n{'year':>6} {'fixtures':>8} {'with XI':>8} {'players':>8} {'stat types':>11} {'stats/player':>13}")
+    label = "year/league" if args.by_league else "year"
+    print(f"\n{label:>12} {'fixtures':>8} {'with XI':>8} {'players':>8} {'stat types':>11} {'stats/player':>13}")
     for year, fixture_ids in samples.items():
         lineups = players = stat_rows = 0
         stat_types: set[int] = set()
@@ -98,14 +128,15 @@ def main() -> None:
             rate = payload["rate_limit"]
             time.sleep(compute_sleep_seconds(rate["remaining"], rate["resets_in_seconds"]))
         per_player = stat_rows / players if players else 0
-        report[year] = {"sampled": len(fixture_ids), "with_lineup": lineups,
+        report[str(year)] = {"sampled": len(fixture_ids), "with_lineup": lineups,
                         "players": players, "distinct_stat_types": len(stat_types),
                         "stats_per_player": round(per_player, 1)}
-        print(f"{year:>6} {len(fixture_ids):>8} {lineups:>8} {players:>8} "
+        print(f"{str(year):>12} {len(fixture_ids):>8} {lineups:>8} {players:>8} "
               f"{len(stat_types):>11} {per_player:>13.1f}")
 
-    REPORT_PATH.write_text(json.dumps(report, indent=2))
-    print(f"\nwritten to {REPORT_PATH}")
+    out_path = Path(args.out) if args.out else REPORT_PATH
+    out_path.write_text(json.dumps(report, indent=2))
+    print(f"\nwritten to {out_path}")
 
 
 if __name__ == "__main__":

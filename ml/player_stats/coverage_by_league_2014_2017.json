@@ -1,0 +1,142 @@
+{
+  "(2014, 301)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 8,
+    "stats_per_player": 1.4
+  },
+  "(2014, 384)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 132,
+    "distinct_stat_types": 7,
+    "stats_per_player": 1.3
+  },
+  "(2014, 564)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 107,
+    "distinct_stat_types": 5,
+    "stats_per_player": 0.7
+  },
+  "(2014, 8)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 7,
+    "stats_per_player": 2.1
+  },
+  "(2014, 82)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 7,
+    "stats_per_player": 1.7
+  },
+  "(2015, 301)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 106,
+    "distinct_stat_types": 39,
+    "stats_per_player": 5.5
+  },
+  "(2015, 384)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 136,
+    "distinct_stat_types": 36,
+    "stats_per_player": 4.1
+  },
+  "(2015, 564)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 37,
+    "stats_per_player": 4.9
+  },
+  "(2015, 8)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 35,
+    "stats_per_player": 5.2
+  },
+  "(2015, 82)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 107,
+    "distinct_stat_types": 43,
+    "stats_per_player": 6.1
+  },
+  "(2016, 301)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 42,
+    "stats_per_player": 12.0
+  },
+  "(2016, 384)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 134,
+    "distinct_stat_types": 39,
+    "stats_per_player": 9.3
+  },
+  "(2016, 564)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 45,
+    "stats_per_player": 12.7
+  },
+  "(2016, 8)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 48,
+    "stats_per_player": 13.5
+  },
+  "(2016, 82)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 107,
+    "distinct_stat_types": 40,
+    "stats_per_player": 12.1
+  },
+  "(2017, 301)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 37,
+    "stats_per_player": 11.8
+  },
+  "(2017, 384)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 136,
+    "distinct_stat_types": 42,
+    "stats_per_player": 9.9
+  },
+  "(2017, 564)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 48,
+    "stats_per_player": 13.1
+  },
+  "(2017, 8)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 41,
+    "stats_per_player": 13.3
+  },
+  "(2017, 82)": {
+    "sampled": 3,
+    "with_lineup": 3,
+    "players": 108,
+    "distinct_stat_types": 45,
+    "stats_per_player": 12.1
+  }
+}

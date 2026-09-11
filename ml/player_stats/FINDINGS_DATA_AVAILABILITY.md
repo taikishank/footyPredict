@@ -238,3 +238,93 @@ equivalent (per-player ratings, minutes), not as a replacement.
    gzip is a ~27× win on this payload (lineup JSON is extremely repetitive),
    which makes taking all 60 stat types cheaper on disk than a filtered,
    pretty-printed cache would have been.
+
+---
+
+## Historical depth: lineups go back to 2004, per-player stats only to 2015/16
+
+Lineups being *present* historically is not the same as being *useful*. Sampling
+fixtures per year (`coverage_by_season.py`, evenly spread across each year and
+split by league so one league's gap can't read as a league-wide cliff):
+
+| era | distinct stat types | stat rows per named player |
+|---|---|---|
+| 2004–2005 | 0 | 0 — team sheets only |
+| 2006–2014 | 5–8 | ~1.5 |
+| 2015 (transition) | 35–43 | ~5 |
+| 2016–2020 | 37–48 | ~13 |
+| 2021–2024 | 42–63 | ~13 |
+| 2025–2026 | 64–65 | ~20 |
+
+Full 35–40-man team sheets come back from 2004 onward; it's the per-player
+*stats* that are thin. The jump is uniform across all five leagues, so it's a
+provider-wide reporting change at the **2015/16 season** boundary, not a gap in
+one competition.
+
+Of 40,787 already-played cached fixtures, **19,756 (48%) fall in the dense
+2016+ era**. Backfilling only those would take ~6.6h instead of ~13.7h. We're
+backfilling everything anyway — the thin seasons cost little at ~4 KiB each,
+and which features the sparse era actually loses is a feature-engineering
+question, better answered with the data in hand than by guessing now.
+
+---
+
+## Season completeness: every season is whole except four
+
+`check_season_completeness.py` checks each league-season in the cache, with no
+API calls. Three checks: season size against the double round-robin its team
+count implies, per-team fixture counts, and per-round fixture counts.
+
+The first version of this check got it wrong in a way worth recording: it
+counted *cached fixture rows*, and a cached row is not evidence a match was
+played. Ligue 1 2019/20 has all 380 rows, 101 of them Cancelled or Postponed —
+it read as complete. Completeness is now counted over played fixtures only
+(states 5 Full Time, 7 After Extra Time), treating 10 Postponed, 12 Cancelled,
+15 Abandoned and 17 Awarded as never played.
+
+**115 league-seasons: 106 complete (3 of them with uneven rounds), 4 with holes,
+5 not yet started in the cache.**
+
+| season | played / expected | cause | per-team impact |
+|---|---|---|---|
+| Ligue 1 2019/20 | 279 / 380 | 80 cancelled, 21 postponed (COVID) | every team short 10–11 |
+| Ligue 1 2024/25 | 305 / 306 | 1 abandoned | 2 teams short 1 |
+| Bundesliga 2024/25 | 305 / 306 | 1 awarded | 2 teams short 1 |
+| Ligue 1 2025/26 | 305 / 306 | 1 abandoned | 2 teams short 1 |
+
+**Recommendation: omit Ligue 1 2019/20 entirely.** Every team lost 10–11
+fixtures, so every rolling form window in that season silently spans a
+three-month void. The other three are one missing match each, affecting two
+teams' windows for a few fixtures — worth knowing, not worth dropping a season
+over, though the simplest safe handling is to drop the affected teams' fixtures
+immediately following the abandoned match.
+
+No season has a team quietly short by a handful of fixtures beyond these, which
+was the specific failure mode worth hunting: too few absences to notice in
+aggregate, enough to distort a team's form features.
+
+### Separate finding: the offline fixture cache is stale for 2026/27
+
+The five current-season league-seasons come back as "not started" in their
+entirety, which is a cache artifact, not reality: **146 fixtures across the five
+leagues have a kickoff already in the past but are cached as Not Started**, with
+no result and no statistics (Premier League 30, La Liga 41, Serie A 30, Ligue 1
+27, Bundesliga 18). Spot-checked against the API - e.g. fixture 19722203
+(2026-08-21) is cached `state_id: 1` but live is Full Time.
+
+This affects the **incumbent** model too, not just this project:
+`data/raw/all_fixtures/` is what `build_features.py` reads, so the 2026/27
+season to date is absent from offline training. Re-running
+`fetch_all_fixtures_data.py` won't fix it either - it skips any fixture already
+cached, so these 146 stale files are never refetched. Worth a targeted refresh
+of fixtures whose cached state is Not Started but whose kickoff has passed.
+
+### A false alarm worth not re-raising
+
+Three complete seasons (Premier League 2005/06 and 2007/08, La Liga 2005/06)
+have unevenly-sized rounds — a round with 6–9 fixtures where 10 were expected.
+Nothing is missing: postponed matches were reassigned to a different
+`round_id`, leaving one round short and another long. Since the season total and
+every per-team count are correct, these are reported as informational rather
+than alerts. Round *numbers* aren't in the payload at all, only ids, so rounds
+are ordered by first kickoff and identified by position.

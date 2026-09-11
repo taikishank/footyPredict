@@ -1,0 +1,198 @@
+{
+  "2000": {
+    "sampled": 4,
+    "with_lineup": 0,
+    "players": 0,
+    "distinct_stat_types": 0,
+    "stats_per_player": 0
+  },
+  "2001": {
+    "sampled": 4,
+    "with_lineup": 0,
+    "players": 0,
+    "distinct_stat_types": 0,
+    "stats_per_player": 0
+  },
+  "2002": {
+    "sampled": 4,
+    "with_lineup": 0,
+    "players": 0,
+    "distinct_stat_types": 0,
+    "stats_per_player": 0
+  },
+  "2003": {
+    "sampled": 4,
+    "with_lineup": 0,
+    "players": 0,
+    "distinct_stat_types": 0,
+    "stats_per_player": 0
+  },
+  "2004": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 119,
+    "distinct_stat_types": 0,
+    "stats_per_player": 0.0
+  },
+  "2005": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 115,
+    "distinct_stat_types": 0,
+    "stats_per_player": 0.0
+  },
+  "2006": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 125,
+    "distinct_stat_types": 6,
+    "stats_per_player": 2.0
+  },
+  "2007": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 126,
+    "distinct_stat_types": 7,
+    "stats_per_player": 1.8
+  },
+  "2008": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 126,
+    "distinct_stat_types": 6,
+    "stats_per_player": 1.5
+  },
+  "2009": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 139,
+    "distinct_stat_types": 1,
+    "stats_per_player": 0.6
+  },
+  "2010": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 138,
+    "distinct_stat_types": 8,
+    "stats_per_player": 1.6
+  },
+  "2011": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 138,
+    "distinct_stat_types": 8,
+    "stats_per_player": 1.7
+  },
+  "2012": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 139,
+    "distinct_stat_types": 7,
+    "stats_per_player": 1.6
+  },
+  "2013": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 7,
+    "stats_per_player": 1.5
+  },
+  "2014": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 7,
+    "stats_per_player": 1.7
+  },
+  "2015": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 8,
+    "stats_per_player": 1.6
+  },
+  "2016": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 45,
+    "stats_per_player": 13.6
+  },
+  "2017": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 41,
+    "stats_per_player": 13.5
+  },
+  "2018": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 41,
+    "stats_per_player": 14.0
+  },
+  "2019": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 45,
+    "stats_per_player": 13.1
+  },
+  "2020": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 144,
+    "distinct_stat_types": 45,
+    "stats_per_player": 14.1
+  },
+  "2021": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 162,
+    "distinct_stat_types": 42,
+    "stats_per_player": 11.6
+  },
+  "2022": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 162,
+    "distinct_stat_types": 52,
+    "stats_per_player": 12.3
+  },
+  "2023": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 160,
+    "distinct_stat_types": 55,
+    "stats_per_player": 14.1
+  },
+  "2024": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 171,
+    "distinct_stat_types": 63,
+    "stats_per_player": 13.4
+  },
+  "2025": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 163,
+    "distinct_stat_types": 65,
+    "stats_per_player": 19.2
+  },
+  "2026": {
+    "sampled": 4,
+    "with_lineup": 4,
+    "players": 160,
+    "distinct_stat_types": 64,
+    "stats_per_player": 19.7
+  },
+  "2027": {
+    "sampled": 4,
+    "with_lineup": 0,
+    "players": 0,
+    "distinct_stat_types": 0,
+    "stats_per_player": 0
+  }
+}
