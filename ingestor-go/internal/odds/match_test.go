@@ -57,6 +57,32 @@ func TestMatchFixture_DifferentTeamsNoMatch(t *testing.T) {
 	}
 }
 
+func TestMatchFixture_AccentedNameStillMatches(t *testing.T) {
+	kickoff := time.Date(2026, 1, 10, 15, 0, 0, 0, time.UTC)
+	candidates := []FixtureCandidate{
+		{FixtureID: 1, HomeName: "SC Freiburg", AwayName: "Borussia Mönchengladbach", StartingAt: kickoff},
+	}
+	event := Event{HomeTeam: "SC Freiburg", AwayTeam: "Borussia Monchengladbach", CommenceTime: kickoff}
+
+	id, ok := matchFixture(event, candidates)
+	if !ok || id != 1 {
+		t.Fatalf("got (%d, %v), want (1, true)", id, ok)
+	}
+}
+
+func TestMatchFixture_ShortenedFrenchNameStillMatches(t *testing.T) {
+	kickoff := time.Date(2026, 1, 10, 15, 0, 0, 0, time.UTC)
+	candidates := []FixtureCandidate{
+		{FixtureID: 1, HomeName: "Paris", AwayName: "Olympique Lyonnais", StartingAt: kickoff},
+	}
+	event := Event{HomeTeam: "Paris FC", AwayTeam: "Lyon", CommenceTime: kickoff}
+
+	id, ok := matchFixture(event, candidates)
+	if !ok || id != 1 {
+		t.Fatalf("got (%d, %v), want (1, true)", id, ok)
+	}
+}
+
 func TestMatchFixture_PicksBestOfMultipleCandidates(t *testing.T) {
 	kickoff := time.Date(2026, 1, 10, 15, 0, 0, 0, time.UTC)
 	candidates := []FixtureCandidate{

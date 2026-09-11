@@ -4,6 +4,11 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 // kickoffTolerance is how far an odds Event's commence_time may drift from a
@@ -22,6 +27,21 @@ const minNameScore = 0.5
 
 var nonAlnum = regexp.MustCompile(`[^a-z0-9\s]`)
 
+// stripDiacritics decomposes accented characters (e.g. "ö" -> "o" + combining
+// diaeresis) and drops the combining marks, so normalizeTeamName ends up
+// splitting on the same ASCII letters The Odds API's team names use (e.g.
+// "Mönchengladbach" vs "Monchengladbach") instead of treating the accented
+// character as punctuation and breaking the token in two.
+var stripDiacritics = transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
+
+func removeDiacritics(s string) string {
+	result, _, err := transform.String(stripDiacritics, s)
+	if err != nil {
+		return s
+	}
+	return result
+}
+
 // clubStopWords are generic club-name tokens stripped before comparing, so
 // they don't inflate the overlap score between two otherwise-different clubs.
 var clubStopWords = map[string]bool{
@@ -37,6 +57,7 @@ var tokenAliases = map[string]string{
 	"utd":    "united",
 	"spurs":  "tottenham",
 	"wolves": "wolverhampton",
+	"lyon":   "lyonnais",
 }
 
 // normalizeTeamName lowercases, strips punctuation, removes generic club
@@ -44,7 +65,8 @@ var tokenAliases = map[string]string{
 // nameScore.
 func normalizeTeamName(name string) map[string]bool {
 	lower := strings.ToLower(name)
-	stripped := nonAlnum.ReplaceAllString(lower, " ")
+	deaccented := removeDiacritics(lower)
+	stripped := nonAlnum.ReplaceAllString(deaccented, " ")
 	tokens := map[string]bool{}
 	for _, tok := range strings.Fields(stripped) {
 		if clubStopWords[tok] {
