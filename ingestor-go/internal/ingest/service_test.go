@@ -16,10 +16,12 @@ type fakeFetcher struct {
 	fixtures []sportmonks.Fixture
 	err      error
 	calls    int
+	starts   []time.Time
 }
 
 func (f *fakeFetcher) FetchFinishedBetween(ctx context.Context, start, end time.Time) ([]sportmonks.Fixture, error) {
 	f.calls++
+	f.starts = append(f.starts, start)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -27,12 +29,20 @@ func (f *fakeFetcher) FetchFinishedBetween(ctx context.Context, start, end time.
 }
 
 type fakeStore struct {
-	written []ParsedFixture
+	written    []ParsedFixture
+	gapStart   *time.Time
+	gapErr     error
+	gapQueries []time.Time
 }
 
 func (s *fakeStore) UpsertFixtures(ctx context.Context, fixtures []ParsedFixture) (int, error) {
 	s.written = append(s.written, fixtures...)
 	return len(fixtures), nil
+}
+
+func (s *fakeStore) OldestUnresolvedStartingAt(ctx context.Context, before time.Time) (*time.Time, error) {
+	s.gapQueries = append(s.gapQueries, before)
+	return s.gapStart, s.gapErr
 }
 
 func testFixture(t *testing.T, id int64) sportmonks.Fixture {
@@ -86,6 +96,41 @@ func TestService_RunCycle_SkipsWithoutWritingWhenRateLimited(t *testing.T) {
 	}
 	if len(store.written) != 0 {
 		t.Fatalf("got %d written fixtures, want 0", len(store.written))
+	}
+}
+
+func TestService_RunCycle_WidensWindowToCloseUnresolvedGap(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	gapStart := time.Now().UTC().AddDate(0, 0, -10) // older than the 3-day window
+	store := &fakeStore{gapStart: &gapStart}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	svc := NewService(fetcher, store, 3, "", logger)
+	svc.runCycle(context.Background())
+
+	if len(fetcher.starts) != 1 {
+		t.Fatalf("got %d fetch calls, want 1", len(fetcher.starts))
+	}
+	if !fetcher.starts[0].Equal(gapStart) {
+		t.Fatalf("got fetch start %v, want widened to gap start %v", fetcher.starts[0], gapStart)
+	}
+}
+
+func TestService_RunCycle_CapsWidenedWindowAtMaxGapWindowDays(t *testing.T) {
+	fetcher := &fakeFetcher{}
+	gapStart := time.Now().UTC().AddDate(0, 0, -90) // far beyond the cap
+	store := &fakeStore{gapStart: &gapStart}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	svc := NewService(fetcher, store, 3, "", logger)
+	svc.runCycle(context.Background())
+
+	if len(fetcher.starts) != 1 {
+		t.Fatalf("got %d fetch calls, want 1", len(fetcher.starts))
+	}
+	floor := time.Now().UTC().AddDate(0, 0, -maxGapWindowDays)
+	if fetcher.starts[0].After(floor.Add(time.Minute)) || fetcher.starts[0].Before(floor.Add(-time.Minute)) {
+		t.Fatalf("got fetch start %v, want capped near %v", fetcher.starts[0], floor)
 	}
 }
 

@@ -18,7 +18,18 @@ type FixtureFetcher interface {
 
 type FixtureStore interface {
 	UpsertFixtures(ctx context.Context, fixtures []ParsedFixture) (int, error)
+	// OldestUnresolvedStartingAt returns the starting_at of the oldest
+	// fixture that's kicked off before `before` but still has no result,
+	// or nil if there's no such gap.
+	OldestUnresolvedStartingAt(ctx context.Context, before time.Time) (*time.Time, error)
 }
+
+// maxGapWindowDays caps how far runCycle will widen its fetch window to
+// close an unresolved-fixture gap. Without a cap, a gap far in the past
+// (e.g. a fixture that will never get a result from the API - abandoned,
+// postponed with no reschedule) would make every cycle re-pull a huge date
+// range indefinitely.
+const maxGapWindowDays = 30
 
 type Service struct {
 	fetcher      FixtureFetcher
@@ -59,6 +70,27 @@ func (s *Service) runCycle(ctx context.Context) {
 	end := time.Now().UTC()
 	start := end.AddDate(0, 0, -s.windowDays)
 
+	if gapStart, err := s.store.OldestUnresolvedStartingAt(ctx, end); err != nil {
+		s.logger.Error("checking for unresolved-fixture gap failed", "error", err)
+	} else if gapStart != nil && gapStart.Before(start) {
+		widened := *gapStart
+		if floor := end.AddDate(0, 0, -maxGapWindowDays); widened.Before(floor) {
+			widened = floor
+		}
+		s.logger.Warn("widening pull window to close unresolved-fixture gap",
+			"normal_start", start.Format("2006-01-02"), "gap_start", widened.Format("2006-01-02"))
+		start = widened
+	}
+
+	s.RunRange(ctx, start, end)
+}
+
+// RunRange fetches and upserts finished fixtures for an explicit [start, end]
+// window, bypassing the windowDays/gap-sweep logic runCycle uses to pick its
+// own range. Exported so a one-off backfill command (cmd/backfill) can reuse
+// the same fetch/parse/upsert path for a historical range (e.g. last season)
+// without duplicating it.
+func (s *Service) RunRange(ctx context.Context, start, end time.Time) {
 	s.logger.Info("pulling finished fixtures", "start", start.Format("2006-01-02"), "end", end.Format("2006-01-02"))
 
 	raw, err := s.fetcher.FetchFinishedBetween(ctx, start, end)
