@@ -142,9 +142,7 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
             )
         )
 
-    # Flagged (significant model-vs-market edge) fixtures surface first,
-    # soonest kickoff first within each group.
-    fixtures.sort(key=lambda fx: (not fx.flagged, fx.starting_at))
+    fixtures.sort(key=lambda fx: fx.starting_at)
 
     return UpcomingFixturesResponse(
         generated_at=now, window_days=_UPCOMING_WINDOW.days, fixtures=fixtures
