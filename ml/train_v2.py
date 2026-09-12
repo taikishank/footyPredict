@@ -149,12 +149,14 @@ def main() -> None:
         model.save_model(str(MODEL_LOCAL_PATH))
         print(f"saved model artifact to {MODEL_LOCAL_PATH}")
 
-        # Still commented out: promoting to S3 publishes this model to whatever
-        # reads the bucket, which is a separate decision from being happy with
-        # it locally. Uncomment when you actually want to ship it.
-        # boto3.client("s3").upload_file(str(MODEL_LOCAL_PATH), S3_BUCKET_MODELS, S3_KEY)
-        # mlflow.log_param("s3_key", S3_KEY)
-        # print(f"uploaded model artifact to s3://{S3_BUCKET_MODELS}/{S3_KEY}")
+        # Publishes to whatever reads the bucket, so this is a deliberate step
+        # rather than a side effect of training - comment it out again while
+        # iterating on a model you aren't ready to ship. The bucket has
+        # versioning enabled, so an upload that turns out to be wrong can be
+        # rolled back to the previous version rather than being unrecoverable.
+        boto3.client("s3").upload_file(str(MODEL_LOCAL_PATH), S3_BUCKET_MODELS, S3_KEY)
+        mlflow.log_param("s3_key", S3_KEY)
+        print(f"uploaded model artifact to s3://{S3_BUCKET_MODELS}/{S3_KEY}")
 
         print(f"run logged to mlflow experiment '{EXPERIMENT_NAME}' at {MLFLOW_TRACKING_DIR}")
 
