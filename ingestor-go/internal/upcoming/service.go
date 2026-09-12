@@ -41,7 +41,20 @@ func NewService(fetcher FixtureFetcher, store FixtureStore, windowDays int, logg
 // runs one cycle immediately rather than waiting a full interval first.
 func (s *Service) Run(ctx context.Context, interval time.Duration) {
 	s.runCycle(ctx)
+	s.Loop(ctx, interval)
+}
 
+// RunCycle runs a single pull cycle synchronously. Callers that need the
+// fixtures table populated before starting other pollers (see cmd/ingestor's
+// odds poller, which reads fixtures this service writes) should call this
+// once before starting Loop, instead of using Run.
+func (s *Service) RunCycle(ctx context.Context) {
+	s.runCycle(ctx)
+}
+
+// Loop runs pull cycles on the given interval, without an initial immediate
+// cycle, until ctx is cancelled.
+func (s *Service) Loop(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

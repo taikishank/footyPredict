@@ -13,6 +13,13 @@ Phase 6.
 Run manually or on a schedule (cron); safe to re-run since already-graded
 fixtures are excluded by the ungraded-fixtures query and the insert's
 ON CONFLICT guard.
+
+Alongside prediction_calls, also writes double_chance_calls: the same call
+reframed as a double-chance bet (the pair of outcomes excluding call_side,
+e.g. call_side 'away_win' -> '1X', home-or-draw). Derived from the same
+snapshot/actual result, so it's purely a different grading of the same edge,
+not a new data source - see PROJECT_SPEC.md-adjacent notes in that table's
+migration.
 """
 from __future__ import annotations
 
@@ -36,6 +43,10 @@ _EDGE_COL = {"home_win": "edge_home", "draw": "edge_draw", "away_win": "edge_awa
 _MODEL_COL = {"home_win": "model_home", "draw": "model_draw", "away_win": "model_away"}
 _MARKET_COL = {"home_win": "market_home", "draw": "market_draw", "away_win": "market_away"}
 _PRICE_COL = {"home_win": "home_price", "draw": "draw_price", "away_win": "away_price"}
+
+# Double-chance label for the bet that excludes a given singleton outcome
+# (e.g. excluding away_win leaves home-or-draw, i.e. "1X").
+_DC_LABEL = {"away_win": "1X", "home_win": "X2", "draw": "12"}
 
 
 def find_ungraded_finished_fixtures(conn: psycopg.Connection) -> list[int]:
@@ -140,6 +151,35 @@ def grade_fixture(conn: psycopg.Connection, fixture_id: int) -> bool:
                 fixture_id, call["computed_at"], call_side, model_prob, market_prob,
                 edge, price, actual_result, correct, brier_score, market_brier_score,
                 staked_units, pnl_units,
+            ),
+        )
+
+    dc_label = _DC_LABEL[call_side]
+    dc_model_prob = 1.0 - model_prob
+    dc_market_prob = 1.0 - market_prob
+    dc_edge = dc_model_prob - dc_market_prob  # == -edge, by construction
+    dc_correct = actual_result != call_side  # wins if either of the other 2 outcomes hit
+    dc_price = (1.0 / dc_market_prob) if dc_market_prob > 0 else None
+    dc_pnl_units = None
+    if dc_price is not None:
+        dc_pnl_units = ((dc_price - 1.0) if dc_correct else -1.0) * staked_units
+    dc_brier_score = (dc_model_prob - (1.0 if dc_correct else 0.0)) ** 2
+    dc_market_brier_score = (dc_market_prob - (1.0 if dc_correct else 0.0)) ** 2
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO double_chance_calls (
+                fixture_id, edge_computed_at, dc_label, excludes_outcome, model_prob,
+                market_prob, edge, implied_price, actual_result, correct, brier_score,
+                market_brier_score, staked_units, pnl_units
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (fixture_id) DO NOTHING
+            """,
+            (
+                fixture_id, call["computed_at"], dc_label, call_side, dc_model_prob,
+                dc_market_prob, dc_edge, dc_price, actual_result, dc_correct,
+                dc_brier_score, dc_market_brier_score, staked_units, dc_pnl_units,
             ),
         )
     return True
