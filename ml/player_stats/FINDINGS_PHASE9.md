@@ -18,6 +18,8 @@ Reproduce with:
 ./inference-py/bin/python ml/player_stats/ablate.py weighting --tier performance
 ./inference-py/bin/python ml/player_stats/ablate.py involve   --tier availability
 ./inference-py/bin/python ml/player_stats/ablate.py involve   --tier performance
+./inference-py/bin/python ml/player_stats/ablate.py isolate  --tier performance
+./inference-py/bin/python ml/player_stats/ablate.py where    --tier availability
 ```
 
 Nothing here touches `ml/feature_lib.py`, `ml/build_features.py` or `ml/train.py`.
@@ -375,6 +377,111 @@ What it points at is a team-form question, not a squad one: **the incumbent's
 window is too short for scoring rate.** `MAX_WINDOW = 8` against 38 here. That
 is a one-build experiment on `ml/feature_lib.py` and it does not belong to
 Phase 9, but it is the most promising thing on this list.
+
+---
+
+## How big is "+0.006"? And do player stats really carry so little?
+
+The numbers above invite the reading "player stats barely matter", which is
+wrong, and the reason it is wrong needed its own experiments (`isolate`,
+`where`). Four corrections, in order of how much they change the picture.
+
+### 1. The denominator is 0.084, not 1.0
+
+Class priors from the training rows score **1.07329** on the 2006+ validation
+set (1.07453 on 2016+). The best arm built here scores 0.98922. So the *entire*
+reducible loss available to every feature in this project is **0.0841** - which
+is what it means to predict football: most of the loss is irreducible.
+
+| arm (2006+, 7,091 val) | log loss | share of all reducible loss |
+|---|---|---|
+| base rates only | 1.07329 | 0% |
+| team form only (54 cols) | 0.99979 | 87.4% |
+| availability block only (30 cols) | 0.99760 | 90.0% |
+| team form + squad (84 cols) | 0.98922 | 100% |
+
+Read on that scale, the availability block's +0.0061 is ~7% of everything the
+model knows and the full squad block's +0.0106 is ~13%. Team form itself - 54
+columns, the entire incumbent - is only worth 0.0735. Nothing in football
+prediction produces large log loss numbers, so "+0.006" has to be compared with
+"+0.0735 for everything we had", not with 1.0.
+
+### 2. In the rating era, player features match team form on their own
+
+`blocks` and `involve` only ever asked what a block adds *on top of* team form,
+which cannot separate "this block knows nothing" from "team form already knows
+it". Team form is eight matches of results produced by these same players, so
+the second was the live hypothesis. Deleting team form entirely settles it:
+
+| 2016+ tier, 3,601 val | cols | log loss | share of reducible |
+|---|---|---|---|
+| base rates only | 0 | 1.07453 | 0% |
+| team form only | 54 | 1.00334 | 87.1% |
+| performance block only | 46 | 1.00469 | 85.4% |
+| availability block only | 30 | 1.00057 | 90.5% |
+| squad only, no team form | 76 | 0.99738 | 94.4% |
+| team form + squad | 130 | 0.99280 | 100% |
+
+**72 player-derived columns score 1.00020 against team form's 1.00334**
+(+0.00314, within noise) once the two club-volume columns are excluded. Player
+stats are not a weak signal; they are a *substitute* for team form rather than a
+complement, and adding team form back to the squad block is worth only +0.0046.
+
+One caveat that had to be checked, because it nearly produced a false headline:
+`club_goals_relative` and `involvement_volume_relative` are club-level, not
+player-level, and they sit inside the availability block. With them excluded, the
+26 minutes-only player columns score **1.03064** - 0.031 *worse* than team form,
+decisively. So the substitute-for-team-form result belongs to the **ratings**,
+which only exist from 2016, and the minutes-only tier genuinely is the weaker
+measurement.
+
+### 3. Team form already knows the squad, except where it doesn't
+
+Least-squares fit of each squad column on the 54 team-form columns (train rows):
+
+| tier | mean R^2 | median R^2 |
+|---|---|---|
+| 2016+ (includes ratings) | 0.309 | 0.295 |
+| 2006+ (minutes only) | 0.108 | 0.044 |
+
+The ranking is the informative part. Most redundant: `xi_weighted_rating`
+(0.71), `involvement_volume_relative` (0.70), `club_goals_relative` (0.70) -
+every squad-*quality* proxy is ~70% predictable from how the team has been
+playing, exactly as it should be if form is a downstream measurement of squad
+quality. Least redundant: `top_scorer_absent` (0.018), `squad_involvement_absent`
+(0.015), `top_player_absent` (0.010).
+
+So the absence features are **not** redundant with team form - they are close to
+orthogonal to it - and they are still weak. That rules out overlap as the
+explanation for them specifically, and leaves the thin-signal one: the team
+sheet cannot distinguish rest from injury.
+
+### 4. The gain does not concentrate where the spec says it should
+
+`where` splits the per-fixture gain by how disrupted the line-ups are. If
+section 1 is right, the block should earn its keep on depleted line-ups and be
+inert on settled ones.
+
+| subset (2006+) | n | gain |
+|---|---|---|
+| settled (0-3 of 22 key players out) | 720 | +0.01745 |
+| some rotation (4-6) | 2,908 | +0.01333 |
+| heavy rotation (7-9) | 2,780 | +0.00576 |
+| wholesale (10+) | 683 | +0.01116 |
+| neither top scorer out | 3,415 | +0.01110 |
+| one top scorer out | 2,943 | +0.00963 |
+| both top scorers out | 733 | +0.01187 |
+
+Flat, and if anything strongest on the *settled* line-ups. The 2016+ tier shows a
+different pattern (heavy rotation +0.01842, settled -0.00034), but the two tiers
+disagree about which subset wins and the subset intervals are 0.01-0.02 wide,
+which is what noise looks like rather than a real interaction.
+
+**The block works as a squad-quality measurement, not as team news.** It helps
+most on fixtures where nobody is missing. That is the same conclusion
+`xi_relative_experience` pointed at on the first day of this phase, now
+confirmed from the opposite direction, and it is the strongest statement this
+phase can make about section 1.
 
 ---
 
