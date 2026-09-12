@@ -1,9 +1,11 @@
 <div class="min-h-screen bg-slate-900 px-6 py-10 text-slate-100">
-  <div class="mx-auto max-w-3xl">
+  <div class="mx-auto max-w-4xl">
     <h1 class="text-2xl font-semibold">LiveEdge — Upcoming Fixtures</h1>
     <p class="mt-1 text-sm text-slate-400">
-      Fixtures kicking off in the next few days, with the model's pre-match win probability
-      alongside the bookmaker-implied market probability and the edge between them.
+      Fixtures kicking off in the next few days, with the team-form model's pre-match win
+      probability next to the v2 challenger's (team form + club goal volume), and both against the
+      bookmaker-implied market probability and the edge between them. Every fixture with enough
+      history gets a pick; the ones whose edge clears the flag threshold are highlighted.
     </p>
 
     @if (fixturesService.status() === 'loading') {
@@ -19,76 +21,167 @@
     }
 
     @if (fixturesService.fixtures().length > 0) {
-      <div class="mt-6 divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-950/40">
+      <div class="mt-6 space-y-4">
         @for (fx of fixturesService.fixtures(); track fx.fixture_id) {
           <div
-            class="grid grid-cols-[1fr_10rem_10rem_8rem] items-center gap-4 px-5 py-4"
-            [class.bg-amber-950/30]="fx.flagged"
-            [class.border-l-2]="fx.flagged"
-            [class.border-amber-500]="fx.flagged"
+            class="rounded-lg border border-slate-800 bg-slate-950/40 p-5"
+            [class.border-amber-600]="fx.flagged"
           >
-            <div class="min-w-0">
-              <div class="font-medium">{{ fx.home_team }} vs {{ fx.away_team }}</div>
-              <div class="mt-0.5 text-xs text-slate-500">
-                {{ fx.starting_at | date: 'MMM d, HH:mm' }}
+            <div class="flex items-start justify-between gap-4">
+              <div class="min-w-0">
+                <div class="text-lg font-medium">{{ fx.home_team }} vs {{ fx.away_team }}</div>
+                <div class="mt-0.5 text-xs text-slate-500">
+                  {{ fx.starting_at | date: 'MMM d, HH:mm' }}
+                </div>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 rounded-md border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
+                (click)="watch(fx.fixture_id)"
+              >
+                Watch live
+              </button>
+            </div>
+
+            <div class="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+                <div class="text-sm font-medium text-slate-300">Team form</div>
+                <div class="mt-1 text-xs text-slate-500">incumbent — serving live</div>
+
+                @if (fx.probabilities; as probs) {
+                  <dl class="mt-3 space-y-1.5 text-sm">
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Home win</dt>
+                      <dd class="text-slate-200">{{ probs.home_win * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Draw</dt>
+                      <dd class="text-slate-200">{{ probs.draw * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Away win</dt>
+                      <dd class="text-slate-200">{{ probs.away_win * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                  </dl>
+
+                  @if (modelPick(fx); as pick) {
+                    <div
+                      class="mt-3 rounded-md border px-3 py-2 text-xs"
+                      [class]="
+                        pick.flagged
+                          ? 'border-amber-700 bg-amber-950/30 text-amber-300'
+                          : 'border-slate-800 bg-slate-900/40 text-slate-400'
+                      "
+                    >
+                      @if (pick.vsMarket; as vs) {
+                        Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}% vs
+                        market {{ vs.marketProb * 100 | number: '1.0-0' }}%, edge
+                        {{ vs.edge * 100 | number: '1.0-0' }}pp)
+                      } @else {
+                        Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}%, no market to compare)
+                      }
+                    </div>
+                  }
+                  @if (modelPickDoubleChance(fx); as dcPick) {
+                    <div
+                      class="mt-1.5 text-xs"
+                      [class]="dcPick.flagged ? 'text-amber-300/70' : 'text-slate-500'"
+                    >
+                      @if (dcPick.vsMarket; as vs) {
+                        Double chance: {{ dcPick.label }} ({{ dcPick.modelProb * 100 | number: '1.0-0' }}%
+                        vs market {{ vs.marketProb * 100 | number: '1.0-0' }}%, edge
+                        {{ vs.edge * 100 | number: '1.0-0' }}pp)
+                      } @else {
+                        Double chance: {{ dcPick.label }} ({{ dcPick.modelProb * 100 | number: '1.0-0' }}%)
+                      }
+                    </div>
+                  }
+                } @else {
+                  <div class="mt-3 text-sm text-slate-500">insufficient history</div>
+                }
+              </div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+                <div class="text-sm font-medium text-slate-300">+ Club goals</div>
+                <div class="mt-1 text-xs text-slate-500">challenger — v2</div>
+
+                @if (fx.probabilities_v2; as probsV2) {
+                  <dl class="mt-3 space-y-1.5 text-sm">
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Home win</dt>
+                      <dd class="text-slate-200">{{ probsV2.home_win * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Draw</dt>
+                      <dd class="text-slate-200">{{ probsV2.draw * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Away win</dt>
+                      <dd class="text-slate-200">{{ probsV2.away_win * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                  </dl>
+
+                  @if (modelPickV2(fx); as pick) {
+                    <div
+                      class="mt-3 rounded-md border px-3 py-2 text-xs"
+                      [class]="
+                        pick.flagged
+                          ? 'border-amber-700 bg-amber-950/30 text-amber-300'
+                          : 'border-slate-800 bg-slate-900/40 text-slate-400'
+                      "
+                    >
+                      @if (pick.vsMarket; as vs) {
+                        Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}% vs
+                        market {{ vs.marketProb * 100 | number: '1.0-0' }}%, edge
+                        {{ vs.edge * 100 | number: '1.0-0' }}pp)
+                      } @else {
+                        Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}%, no market to compare)
+                      }
+                    </div>
+                  }
+                  @if (modelPickDoubleChanceV2(fx); as dcPick) {
+                    <div
+                      class="mt-1.5 text-xs"
+                      [class]="dcPick.flagged ? 'text-amber-300/70' : 'text-slate-500'"
+                    >
+                      @if (dcPick.vsMarket; as vs) {
+                        Double chance: {{ dcPick.label }} ({{ dcPick.modelProb * 100 | number: '1.0-0' }}%
+                        vs market {{ vs.marketProb * 100 | number: '1.0-0' }}%, edge
+                        {{ vs.edge * 100 | number: '1.0-0' }}pp)
+                      } @else {
+                        Double chance: {{ dcPick.label }} ({{ dcPick.modelProb * 100 | number: '1.0-0' }}%)
+                      }
+                    </div>
+                  }
+                } @else {
+                  <div class="mt-3 text-sm text-slate-500">not available</div>
+                }
+              </div>
+
+              <div class="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+                <div class="text-sm font-medium text-slate-300">Market</div>
+                <div class="mt-1 text-xs text-slate-500">bookmaker-implied</div>
+
+                @if (fx.market; as market) {
+                  <dl class="mt-3 space-y-1.5 text-sm">
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Home win</dt>
+                      <dd class="text-slate-200">{{ market.home_win * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Draw</dt>
+                      <dd class="text-slate-200">{{ market.draw * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                    <div class="flex justify-between">
+                      <dt class="text-slate-500">Away win</dt>
+                      <dd class="text-slate-200">{{ market.away_win * 100 | number: '1.0-0' }}%</dd>
+                    </div>
+                  </dl>
+                } @else {
+                  <div class="mt-3 text-sm text-slate-500">no odds match yet</div>
+                }
               </div>
             </div>
-
-            <div class="text-right text-sm">
-              @if (fx.probabilities; as probs) {
-                <div class="text-slate-300">
-                  H {{ probs.home_win * 100 | number: '1.0-0' }}% &middot;
-                  D {{ probs.draw * 100 | number: '1.0-0' }}% &middot;
-                  A {{ probs.away_win * 100 | number: '1.0-0' }}%
-                </div>
-              } @else {
-                <div class="text-slate-500">insufficient history</div>
-              }
-              <div class="mt-0.5 text-xs text-slate-600">model</div>
-            </div>
-
-            <div class="text-right text-sm">
-              @if (fx.market; as market) {
-                <div class="text-slate-300">
-                  H {{ market.home_win * 100 | number: '1.0-0' }}% &middot;
-                  D {{ market.draw * 100 | number: '1.0-0' }}% &middot;
-                  A {{ market.away_win * 100 | number: '1.0-0' }}%
-                </div>
-                @if (fx.edge; as edge) {
-                  <div class="mt-0.5 text-xs" [class.text-amber-400]="fx.flagged" [class.text-slate-600]="!fx.flagged">
-                    edge H {{ edge.home_win * 100 | number: '1.0-0' }}pp &middot;
-                    D {{ edge.draw * 100 | number: '1.0-0' }}pp &middot;
-                    A {{ edge.away_win * 100 | number: '1.0-0' }}pp
-                  </div>
-                }
-                @if (modelPick(fx); as pick) {
-                  <div class="mt-1 text-xs font-medium text-amber-300">
-                    Model's pick: {{ pick.label }}
-                    ({{ pick.modelProb * 100 | number: '1.0-0' }}% vs market
-                    {{ pick.marketProb * 100 | number: '1.0-0' }}%, edge
-                    {{ pick.edge * 100 | number: '1.0-0' }}pp)
-                  </div>
-                }
-                @if (modelPickDoubleChance(fx); as dcPick) {
-                  <div class="mt-0.5 text-xs text-amber-300/70">
-                    Double chance: {{ dcPick.label }}
-                    ({{ dcPick.modelProb * 100 | number: '1.0-0' }}% vs market
-                    {{ dcPick.marketProb * 100 | number: '1.0-0' }}%, edge
-                    {{ dcPick.edge * 100 | number: '1.0-0' }}pp)
-                  </div>
-                }
-              } @else {
-                <div class="text-slate-600">no odds match yet</div>
-              }
-            </div>
-
-            <button
-              type="button"
-              class="w-full rounded-md border border-slate-700 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800"
-              (click)="watch(fx.fixture_id)"
-            >
-              Watch live
-            </button>
           </div>
         }
       </div>
