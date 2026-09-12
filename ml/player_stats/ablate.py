@@ -9,6 +9,9 @@ follow-up questions that one raises and cannot settle:
   trim      the performance block cut down to its top-k features by importance,
             testing whether 36 columns on 14,403 training rows is simply too
             many for the signal to survive
+  weighting counted absence against minutes-weighted absence, and flat
+            per-position means against form-weighted ones - the rework of the
+            aggregation that Phase 9's findings pointed at
 
 Every arm is trained on identical rows and an identical split and compared with
 the same paired bootstrap as the promotion bar itself, so the numbers here are
@@ -27,7 +30,16 @@ from sklearn.metrics import log_loss
 sys.path.insert(0, str(Path(__file__).parent))
 
 import train_challenger as tc  # noqa: E402
-from player_feature_lib import AVAILABILITY_FIELD_ORDER, PERFORMANCE_FIELD_ORDER  # noqa: E402
+from player_feature_lib import (  # noqa: E402
+    ABSENCE_FIELD_ORDER,
+    AVAILABILITY_BASE_FIELDS,
+    AVAILABILITY_FIELD_ORDER,
+    PERFORMANCE_BASE_FIELDS,
+    PERFORMANCE_FIELD_ORDER,
+    WEIGHTED_AVAILABILITY_FIELDS,
+    WEIGHTED_PERFORMANCE_FIELDS,
+    WEIGHTED_SQUAD_FIELDS,
+)
 
 
 def load(tier: str):
@@ -159,7 +171,64 @@ def _print_resolution(y, split) -> None:
           f"roughly 0.005 log loss and larger.")
 
 
-MODES = {"blocks": blocks, "features": features, "trim": trim}
+def weighting(tier: str) -> None:
+    """Does weighting players by how much they play beat treating them alike?
+
+    Phase 9's finding was that `key_players_absent` ranks a club's eleventh-most
+    used player level with its top scorer, and that the only performance feature
+    that ranked at all was a distribution statistic. Both point at the
+    aggregation, so this asks the question directly and in both tiers:
+
+      counted absence     vs  minutes-weighted absence      (availability, 2006+)
+      flat position means vs  + form-weighted squad quality  (performance, 2016+)
+
+    The absence arms *swap* rather than stack, because the whole claim is that
+    the weighted column says something the counted one cannot; if it only helps
+    alongside the count, that is a different and much weaker result.
+    """
+    df, form, sides, y, split = load(tier)
+    counted = [n for n in AVAILABILITY_BASE_FIELDS]
+    swapped = [n for n in counted if n != "key_players_absent"] + list(
+        WEIGHTED_AVAILABILITY_FIELDS
+    )
+
+    arms = {
+        "form only": form,
+        "counted absence": form + sides(counted),
+        "weighted absence": form + sides(swapped),
+        "both absence forms": form + sides(AVAILABILITY_FIELD_ORDER),
+    }
+    pairs = [
+        ("form only", "counted absence"),
+        ("form only", "weighted absence"),
+        ("counted absence", "both absence forms"),
+        ("weighted absence", "both absence forms"),
+    ]
+
+    if any(f"home_sq_{n}" in df.columns for n in WEIGHTED_PERFORMANCE_FIELDS):
+        availability = sides(AVAILABILITY_FIELD_ORDER)
+        arms["+ flat performance"] = form + availability + sides(PERFORMANCE_BASE_FIELDS)
+        arms["+ weighted squad"] = (
+            form + availability + sides(PERFORMANCE_BASE_FIELDS + WEIGHTED_SQUAD_FIELDS)
+        )
+        arms["+ absent quality"] = (
+            form + availability + sides(PERFORMANCE_BASE_FIELDS + ABSENCE_FIELD_ORDER)
+        )
+        arms["+ all weighted"] = form + availability + sides(PERFORMANCE_FIELD_ORDER)
+        pairs += [
+            ("both absence forms", "+ flat performance"),
+            ("+ flat performance", "+ weighted squad"),
+            ("+ flat performance", "+ absent quality"),
+            ("+ flat performance", "+ all weighted"),
+            ("both absence forms", "+ all weighted"),
+        ]
+
+    results = {name: fit(df, cols, y, split) for name, cols in arms.items()}
+    report(results, pairs)
+    _print_resolution(y, split)
+
+
+MODES = {"blocks": blocks, "features": features, "trim": trim, "weighting": weighting}
 
 
 def main() -> None:

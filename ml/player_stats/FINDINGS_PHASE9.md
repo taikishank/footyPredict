@@ -14,6 +14,8 @@ Reproduce with:
 ./inference-py/bin/python ml/player_stats/ablate.py blocks   --tier performance
 ./inference-py/bin/python ml/player_stats/ablate.py features --tier availability
 ./inference-py/bin/python ml/player_stats/ablate.py trim     --tier performance
+./inference-py/bin/python ml/player_stats/ablate.py weighting --tier availability
+./inference-py/bin/python ml/player_stats/ablate.py weighting --tier performance
 ```
 
 Nothing here touches `ml/feature_lib.py`, `ml/build_features.py` or `ml/train.py`.
@@ -28,13 +30,21 @@ untouched; challenger runs go to `liveedge-match-outcome-playerstats`.
 
 | comparison | log loss reduction | 95% CI | verdict |
 |---|---|---|---|
-| team form → + availability block (2006+, 7,091 val fixtures) | **+0.00608** | [+0.00267, +0.00974] | clears |
-| team form → + availability block (2016+, 3,601 val fixtures) | **+0.00690** | [+0.00277, +0.01100] | clears |
-| + availability → + performance block (2016+) | +0.00049 | [−0.00412, +0.00498] | **within noise** |
+| team form → + availability block (2006+, 7,091 val fixtures) | **+0.00618** | [+0.00276, +0.00982] | clears |
+| team form → + availability block (2016+, 3,601 val fixtures) | **+0.00731** | [+0.00304, +0.01142] | clears |
+| + availability → + performance block (2016+) | +0.00060 | [−0.00393, +0.00539] | **within noise** |
 
-The 14 minutes-derived availability features capture the entire gain. The 36
+The 18 minutes-derived availability features capture the entire gain. The 46
 rating-derived performance features — the ones that cost the 2016 cutoff and
 half the training history — add nothing measurable on top.
+
+(Both blocks grew in the weighted rework below, from 14 and 36 columns; the
+earlier numbers for the narrower blocks were +0.00608, +0.00690 and +0.00049 —
+the same verdicts, and the differences are an order of magnitude inside what
+this split resolves.)
+
+Reweighting the aggregations so that players are no longer interchangeable
+(below) does not change that: it is a null result, and an informative one.
 
 ---
 
@@ -91,10 +101,15 @@ supported by this evidence; the measurable effect is a squad-quality proxy.
 
 This does not make the block worthless — it is a real, reproducible improvement
 the incumbent cannot express — but it does mean the interesting claim in §1 is
-still unproven, and the reason is probably that **key-player absence is being
+still unproven, and the suspected reason was that **key-player absence is being
 measured against a season-minutes ranking rather than against a player's actual
-importance**. A club's 11th-most-used player missing counts the same as its top
-scorer missing. Worth revisiting before Phase 10 builds serving on top of it.
+importance**: a club's 11th-most-used player missing counts the same as its top
+scorer missing.
+
+That suspicion has since been tested and does not hold — see "The weighted
+rework" below. Weighting absence by minutes is nearly collinear with counting
+it, because the same minutes pick the key eleven in the first place. §1 remains
+unproven, and the reason lies elsewhere.
 
 ---
 
@@ -162,6 +177,114 @@ it has is smaller than ~0.005 log loss"** — an order of magnitude below the
 +0.0069 the availability block delivers on the same rows. Distinguishing a
 genuinely-zero effect from a small one would need either more history (which
 the 2015/16 provider cliff forecloses) or a much larger validation set.
+
+---
+
+## The weighted rework: a null result, and why
+
+Open items 1 and 2 below both blamed the *aggregation* rather than the input:
+`key_players_absent` counts heads, so a club's 11th-most-used player missing
+scores the same as its top scorer, and the only performance feature that ranked
+at all was `top3_rating`, a distribution statistic. The rework weights both by
+how much each player actually plays:
+
+| field | tier | what it replaces |
+|---|---|---|
+| `key_minutes_absent` | availability | the count, by share of the key eleven's season minutes |
+| `top_player_absent` | availability | — (the sharpest form of §1: the ever-present man is out) |
+| `xi_weighted_rating` | performance | the flat per-position mean, weighted by season minutes |
+| `rating_top1`, `rating_bottom3` | performance | — (the distribution `top3_rating` half-described) |
+| `absent_rating_mean`, `absent_rating_weighted` | performance | — (the absentees carry their own rolling form) |
+
+`ablate.py weighting` swaps rather than stacks the two absence forms, because
+the claim is that the weighted column says something the count cannot; helping
+only *alongside* the count would be a much weaker result.
+
+Availability tier (2006+, 7,091 validation fixtures):
+
+| arm | columns | log loss | vs. form only |
+|---|---|---|---|
+| form only | 54 | 0.99979 | — |
+| counted absence | 68 | 0.99371 | +0.00608, clears |
+| weighted absence | 70 | 0.99368 | +0.00611, clears |
+| both forms | 72 | 0.99362 | +0.00617, clears |
+
+Performance tier (2016+, 3,601 validation fixtures):
+
+| arm | columns | log loss | vs. previous |
+|---|---|---|---|
+| counted absence | 68 | 0.99643 | — |
+| weighted absence | 70 | 0.99582 | +0.00062 on the swap |
+| + flat performance | 108 | 0.99519 | +0.00084, noise |
+| + weighted squad quality | 114 | 0.99514 | +0.00005, noise |
+| + absent quality | 112 | 0.99544 | −0.00025, noise |
+| + all weighted | 118 | 0.99543 | −0.00024, noise |
+
+**Every weighted variant lands inside noise.** The best of them — swapping the
+weighted absence in for the count on 2016+ — is +0.00062, an eighth of what this
+split can resolve. Nothing here is worse either; the two parameterisations are
+empirically the same feature.
+
+### Why, which is the part worth keeping
+
+**Weighting absence by minutes is close to circular.** `key_minutes_absent`
+correlates **+0.981** with the count it was meant to replace. Conditioning on
+the count shows why:
+
+| key players absent | mean minutes share absent | std | p10–p90 |
+|---|---|---|---|
+| 1 | 0.076 | 0.016 | 0.054–0.097 |
+| 2 | 0.158 | 0.022 | 0.130–0.188 |
+| 3 | 0.244 | 0.027 | 0.210–0.278 |
+| 5 | 0.424 | 0.033 | 0.381–0.466 |
+
+Given *k* absences the weighted feature is *k*/11 ± 0.03. Of its 0.139 total
+standard deviation, only **0.027 survives** removing the count. The reason is
+structural: the key eleven are *selected* by season minutes, and selecting the
+eleven most-used players selects eleven players with similar minutes. Ranking by
+minutes and then weighting by minutes asks the same question twice. The gap
+between a club's most- and 11th-most-used player is about four percentage points
+of first-team playing time, which is not enough spread for a tree to split on.
+
+**And the missing players are not better than the ones replacing them.** Across
+18,004 fixtures the absent key players' mean rolling rating is **6.96** against
+the fielded XI's weighted **7.03**. The absences in this data are mostly
+rotation, not stars ruled out — so an absence-quality feature is averaging over
+a population that is, if anything, slightly below the side that takes the pitch.
+That is a fact about what "key player absent" means in a season's worth of team
+sheets, not a property of the formula.
+
+**The weighted ratings barely move either.** `xi_weighted_rating` correlates
++0.922 with `top3_rating` and +0.82 with the flat positional mean it was meant
+to improve on. Re-weighting eleven numbers that already sit inside a 0.15-wide
+band cannot produce a materially different column.
+
+It does, though, become the performance block's *preferred* column:
+`away_sq_xi_weighted_rating` now ranks third in the whole challenger by
+importance, above every team-form feature except passing, and takes the place
+`top3_rating` held. That is a useful warning about importance rankings — the
+model reaches for the column, and the paired bootstrap says reaching for it
+changes the predictions by +0.00005. Importance says which column a tree
+prefers among correlated alternatives, not how much the block is worth.
+
+### What this settles
+
+Open items 1 and 2 are **closed as falsified rather than fixed**. The
+aggregation was a reasonable suspect and it was not the lever: §1's claim does
+not fail because absence is counted instead of weighted, and the performance
+block is not weak because its means are unweighted. What the evidence now says
+is that **season minutes — in any parameterisation, counted or weighted — is the
+wrong importance measure**, because it is the same quantity used to pick the key
+players in the first place. A measure with independent variation (share of the
+club's goal involvements, or minutes *missed* against a known injury list rather
+than inferred from the team sheet) would be a different test; this one is done.
+
+The weighted columns stay in the library. They cost two columns in the
+availability tier, are not worse on either tier, have the better point estimate
+on both, carry no date correlation (+0.02 and −0.01), and are the more defensible
+thing to serve. But they are kept as a no-cost improvement in parameterisation,
+**not** as a measured gain — and the headline result is unchanged: the
+availability tier clears the bar, the performance tier does not.
 
 ---
 
@@ -234,15 +357,24 @@ was real and only its parameterisation was leaking.
 
 ## Open items for Phase 10
 
-1. **Key-player absence needs a better importance measure than season minutes**
-   (see above). This is the single most likely reason §1's central claim is not
-   showing up in the numbers.
+1. ~~**Key-player absence needs a better importance measure than season
+   minutes.**~~ **Tested and closed** — see "The weighted rework" above. A
+   minutes-weighted absence feature correlates +0.981 with the count it
+   replaced and changes nothing, because the key eleven are selected by minutes
+   in the first place. The open item that survives is narrower and harder: an
+   importance measure with *independent* variation. Goal involvements are in
+   the cache already; a real injury list is not, and "absent from the team
+   sheet" conflates injury with rotation, which the 6.96-vs-7.03 rating
+   comparison above shows is the dominant case.
 2. **The performance tier should not be carried forward as-is.** It costs the
-   2016 cutoff, halves the training set, and buys nothing — and the section
-   above rules out both column count and missing stat types as the cause. If it
-   is revisited, the thing to change is the *aggregation*, not the input:
-   `top3_rating` outranks every other performance feature, which points at the
-   distribution of quality across an XI rather than its per-position mean.
+   2016 cutoff, halves the training set, and buys nothing. The three
+   explanations worth ruling out now have been: column count (`trim`, no k
+   clears), breadth of input (18 of 74 stat types captured, and more would not
+   help), and the aggregation (`weighting`, every variant inside noise). The
+   flat per-position mean was the best remaining suspect and it is not the
+   cause — re-weighting an XI whose ratings all sit inside a 0.15-wide band
+   cannot produce a different column. Whatever is missing is not in this
+   feature family.
 3. **The train/serve gap is still unmeasured.** The cache holds only ~40
    fixtures with a predicted XI (874 rows), far too few to estimate how much
    accuracy is lost when the XI is guessed rather than confirmed. Phase 10's

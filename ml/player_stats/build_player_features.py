@@ -31,8 +31,10 @@ from player_feature_lib import (  # noqa: E402
     PERFORMANCE_FIELD_ORDER,
     LeagueExperience,
     PositionAverages,
+    absence_impact,
     availability_form,
     impute_form,
+    key_players,
     numeric,
     player_form,
     squad_strength,
@@ -109,14 +111,26 @@ def build() -> pd.DataFrame:
                 league_reference=league_experience.reference(league_id),
             )
 
+            # Forms are needed for the absent key players too, not just the
+            # eleven on the pitch: an absence feature weighted by the missing
+            # player's own rating has to look him up somewhere.
+            team_minutes = season_minutes.get((team_id, season_id), {})
+            xi_ids = {r["player_id"] for r in xi}
+            absent = [
+                {"player_id": pid, "position": player_history[pid][-1]["position"]}
+                for pid in key_players(team_minutes)
+                if pid not in xi_ids and player_history.get(pid)
+            ]
             forms = {
-                r["player_id"]: player_form(player_history[r["player_id"]])
-                for r in xi
-                if len(player_history.get(r["player_id"], ())) >= MIN_APPEARANCES
+                pid: player_form(player_history[pid])
+                for pid in xi_ids | {row["player_id"] for row in absent}
+                if len(player_history.get(pid, ())) >= MIN_APPEARANCES
             }
-            strength = squad_strength(xi, forms, impute_form(averages, league_id))
+            fallback = impute_form(averages, league_id)
+            strength = squad_strength(xi, forms, fallback, weights=team_minutes)
+            missing = absence_impact(absent, team_minutes, forms, fallback)
 
-            blocks[team_id] = {**available, **strength}
+            blocks[team_id] = {**available, **strength, **missing}
 
         if len(blocks) == 2:
             rows.append((fixture_id, date, blocks))

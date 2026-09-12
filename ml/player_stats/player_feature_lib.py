@@ -115,7 +115,7 @@ def player_form(history: list[dict]) -> dict:
 
 # --- availability tier -------------------------------------------------------
 
-AVAILABILITY_FIELD_ORDER = (
+AVAILABILITY_BASE_FIELDS = (
     "modal_xi_retained",
     "prev_xi_retained",
     "key_players_absent",
@@ -124,6 +124,18 @@ AVAILABILITY_FIELD_ORDER = (
     "xi_mean_minutes_share",
     "days_since_last_match",
 )
+
+# The weighted half of the availability block. `key_players_absent` above counts
+# heads, which is the aggregation FINDINGS_PHASE9.md put on trial: a club's
+# 11th-most-used player missing scores the same as its top scorer missing, and
+# spec section 1's claim is specifically about the latter. These two say *how
+# much* of the first team is out rather than how many of it.
+WEIGHTED_AVAILABILITY_FIELDS = (
+    "key_minutes_absent",
+    "top_player_absent",
+)
+
+AVAILABILITY_FIELD_ORDER = AVAILABILITY_BASE_FIELDS + WEIGHTED_AVAILABILITY_FIELDS
 
 
 def modal_xi(recent_xis: list[frozenset[int]]) -> set[int]:
@@ -175,6 +187,16 @@ class LeagueExperience:
         return sum(recent) / len(recent) if recent else None
 
 
+def key_players(season_minutes: dict[int, float]) -> list[int]:
+    """The squad's most-used players this season, most-used first.
+
+    Shared by the absence features in both tiers so they always rank the same
+    squad the same way; a rating-weighted absence measured against a different
+    eleven than the counted one would not be comparable with it.
+    """
+    return sorted(season_minutes, key=lambda p: -season_minutes[p])[:KEY_PLAYER_COUNT]
+
+
 def availability_form(
     xi: list[dict],
     recent_xis: list[frozenset[int]],
@@ -199,7 +221,14 @@ def availability_form(
     # Most-used players by minutes this season. Before a season has any minutes
     # in it (matchday one) nobody qualifies, and the feature correctly reports
     # zero absences rather than eleven.
-    key_players = sorted(season_minutes, key=lambda p: -season_minutes[p])[:KEY_PLAYER_COUNT]
+    key_ids = key_players(season_minutes)
+
+    # Absence weighted by usage. Denominator is the key eleven's own minutes,
+    # not the whole squad's, so the feature reads as "what share of the first
+    # team's playing time is not on the pitch" and does not shrink just because
+    # a club has rotated widely enough to spread minutes over 25 players.
+    key_minutes = sum(season_minutes[p] for p in key_ids)
+    absent_minutes = sum(season_minutes[p] for p in key_ids if p not in ids)
 
     total_minutes = sum(season_minutes.values())
     minutes_share = [
@@ -211,7 +240,11 @@ def availability_form(
     return {
         "modal_xi_retained": len(ids & settled) / 11 if settled else None,
         "prev_xi_retained": len(ids & previous) / 11 if previous else None,
-        "key_players_absent": sum(1 for p in key_players if p not in ids),
+        "key_players_absent": sum(1 for p in key_ids if p not in ids),
+        "key_minutes_absent": absent_minutes / key_minutes if key_minutes else 0.0,
+        # The sharpest form of section 1's claim: not "someone is missing" but
+        # "the man who plays every week is missing".
+        "top_player_absent": float(bool(key_ids) and key_ids[0] not in ids),
         "xi_relative_experience": (
             mean_appearances / league_reference if league_reference else None
         ),
@@ -235,15 +268,37 @@ _XI_RATE_STATS = {
     "defensive_actions": ("tackles", "interceptions", "clearances"),
 }
 
-PERFORMANCE_FIELD_ORDER = (
+PERFORMANCE_BASE_FIELDS = (
     tuple(f"{group}_rating" for group in POSITION_GROUPS)
     + tuple(f"{group}_count" for group in POSITION_GROUPS)
     + tuple(_XI_RATE_STATS)
     + ("gk_saves", "gk_conceded", "top3_rating", "rating_spread", "imputed_players")
 )
 
+# The weighted half of the performance block, and the reason this rework exists.
+# Everything above treats an XI as eleven interchangeable slots: a per-position
+# mean gives an academy debutant the same vote as the club captain. The only
+# base feature that ranked at all was top3_rating - a distribution statistic -
+# which is what pointed at the aggregation rather than at the input
+# (FINDINGS_PHASE9.md, open item 2).
+#
+# These weight each player by how much this club actually plays him, and extend
+# the same weighting to who is missing.
+# Emitted by squad_strength() ...
+WEIGHTED_SQUAD_FIELDS = ("xi_weighted_rating", "rating_top1", "rating_bottom3")
+# ... and by absence_impact(), which needs the forms of players who are *not* in
+# the XI and so cannot come out of the same function.
+ABSENCE_FIELD_ORDER = ("absent_rating_mean", "absent_rating_weighted")
 
-def squad_strength(xi: list[dict], forms: dict[int, dict], fallback) -> dict:
+WEIGHTED_PERFORMANCE_FIELDS = WEIGHTED_SQUAD_FIELDS + ABSENCE_FIELD_ORDER
+
+SQUAD_FIELD_ORDER = PERFORMANCE_BASE_FIELDS + WEIGHTED_SQUAD_FIELDS
+PERFORMANCE_FIELD_ORDER = SQUAD_FIELD_ORDER + ABSENCE_FIELD_ORDER
+
+
+def squad_strength(
+    xi: list[dict], forms: dict[int, dict], fallback, weights: dict[int, float] | None = None
+) -> dict:
     """Aggregate an XI's individual form vectors into a fixed-size block.
 
     Fixed-size is the whole point: eleven variable-length player vectors cannot
@@ -252,6 +307,12 @@ def squad_strength(xi: list[dict], forms: dict[int, dict], fallback) -> dict:
     player without enough history of his own - see `impute_form`. Position
     counts come along for free and encode the shape of the XI (a back three
     versus a back four) without anyone parsing a formation string.
+
+    `weights` is each player's minutes so far this season, used for the weighted
+    rating. Unweighted means are what this block was criticised for: a squad's
+    quality is not the average of eleven equal votes when three of the eleven
+    are reserves covering for injuries. Absent or all-zero weights degrade to a
+    plain mean, which is the correct reading on matchday one.
     """
     resolved = []
     imputed = 0
@@ -294,12 +355,39 @@ def squad_strength(xi: list[dict], forms: dict[int, dict], fallback) -> dict:
     # not the same proposition as eleven average ones.
     block["top3_rating"] = sum(ratings[:3]) / len(ratings[:3]) if ratings else None
     block["rating_spread"] = _stdev(ratings)
+    # The rest of the distribution that top3_rating only half-describes: the
+    # single best player, and the weakest three - a side is often beaten
+    # through the three places it had to patch, not through its stars.
+    block["rating_top1"] = ratings[0] if ratings else None
+    block["rating_bottom3"] = sum(ratings[-3:]) / len(ratings[-3:]) if ratings else None
+    block["xi_weighted_rating"] = weighted_mean(
+        [
+            (r, (weights or {}).get(row["player_id"], 0.0))
+            for row, form in resolved
+            if (r := numeric(form.get("rating"))) is not None
+        ]
+    )
     # How much of the block above is real. The model can use this to discount
     # its own inputs, which matters most for exactly the fixtures where the
     # block is least trustworthy - a promoted side's opening weeks.
     block["imputed_players"] = imputed
 
     return block
+
+
+def weighted_mean(pairs: list[tuple[float, float]]) -> float | None:
+    """Mean of (value, weight) pairs, degrading to a plain mean without weights.
+
+    The degradation matters more than the formula: every club's first fixture
+    of a season has no minutes to weight by, and a feature that went null there
+    would be missing exactly where squad churn is largest.
+    """
+    if not pairs:
+        return None
+    total = sum(w for _, w in pairs)
+    if total <= 0:
+        return sum(v for v, _ in pairs) / len(pairs)
+    return sum(v * w for v, w in pairs) / total
 
 
 def _stdev(values: list[float]) -> float | None:
@@ -349,3 +437,45 @@ def impute_form(averages: PositionAverages, league_id: int):
         return averages.get(league_id, row.get("position"))
 
     return fallback
+
+
+def absence_impact(
+    absent: list[dict],
+    season_minutes: dict[int, float],
+    forms: dict[int, dict],
+    fallback,
+) -> dict:
+    """How good the missing key players are, not just how many there are.
+
+    This is the half of the rework that tests spec section 1 directly. The
+    counted version cannot tell a club's top scorer from its eleventh-most-used
+    squad player; here each absentee carries his own rolling rating.
+
+    `absent` is one row per missing key player (`player_id` and `position`, the
+    latter only so an unknown player can be imputed from his position group),
+    and `season_minutes` the whole squad's minutes, which supply the weight.
+
+    Two features rather than one because they answer different questions and a
+    single product confounds them: the mean says *how good* the missing players
+    are, the weighted sum says *how much* of the side is missing and how good
+    it was. A fringe international out injured moves the first and not the
+    second; three regulars suspended move the second and not the first.
+    """
+    total_minutes = sum(season_minutes.values())
+    ratings: list[float] = []
+    weighted = 0.0
+    for row in absent:
+        form = forms.get(row["player_id"])
+        if form is None or numeric(form.get("rating")) is None:
+            form = fallback(row)
+        rating = numeric(form.get("rating"))
+        if rating is None:
+            continue
+        ratings.append(rating)
+        share = season_minutes.get(row["player_id"], 0.0) / total_minutes if total_minutes else 0.0
+        weighted += rating * share
+
+    return {
+        "absent_rating_mean": sum(ratings) / len(ratings) if ratings else None,
+        "absent_rating_weighted": weighted,
+    }

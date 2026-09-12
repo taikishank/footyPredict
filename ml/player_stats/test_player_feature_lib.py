@@ -103,6 +103,31 @@ def test_availability_counts_absent_key_players():
     assert block["key_players_absent"] == 3
 
 
+def test_availability_weights_absence_by_minutes_played():
+    # the top player is worth 1000 of the squad's 1055 key minutes; losing him
+    # and losing the eleventh-most-used man must not read the same
+    season_minutes = {0: 1000, **{pid: 10 - pid for pid in range(1, 15)}}
+    without_star = [_starter(i) for i in range(1, 12)]
+    without_fringe = [_starter(i) for i in range(10)] + [_starter(99)]
+
+    star = pf.availability_form(without_star, [], season_minutes, {}, None, None)
+    fringe = pf.availability_form(without_fringe, [], season_minutes, {}, None, None)
+
+    # the counted feature cannot tell these two apart at all
+    assert star["key_players_absent"] == fringe["key_players_absent"] == 1
+    assert star["key_minutes_absent"] > 0.9
+    assert fringe["key_minutes_absent"] < 0.05
+    assert (star["top_player_absent"], fringe["top_player_absent"]) == (1.0, 0.0)
+
+
+def test_availability_absence_weights_are_zero_when_nobody_is_missing():
+    season_minutes = {pid: 100 for pid in range(11)}
+    xi = [_starter(i) for i in range(11)]
+    block = pf.availability_form(xi, [], season_minutes, {}, None, None)
+    assert block["key_minutes_absent"] == 0.0
+    assert block["top_player_absent"] == 0.0
+
+
 def test_availability_reports_no_absences_before_a_season_has_minutes():
     # matchday one has no minutes to rank by; eleven absences would be wrong
     xi = [_starter(i) for i in range(11)]
@@ -143,7 +168,16 @@ def _no_history(row):
 def test_squad_strength_emits_every_declared_field():
     xi = [_starter(i) for i in range(11)]
     block = pf.squad_strength(xi, {}, _no_history)
-    assert set(block) == set(pf.PERFORMANCE_FIELD_ORDER)
+    assert set(block) == set(pf.SQUAD_FIELD_ORDER)
+
+
+def test_absence_impact_emits_every_declared_field():
+    block = pf.absence_impact([], {}, {}, _no_history)
+    assert set(block) == set(pf.ABSENCE_FIELD_ORDER)
+    # the union of the two emitters is what the performance CSV carries
+    assert set(pf.SQUAD_FIELD_ORDER) | set(pf.ABSENCE_FIELD_ORDER) == set(
+        pf.PERFORMANCE_FIELD_ORDER
+    )
 
 
 def test_squad_strength_counts_positions_as_the_shape_of_the_xi():
@@ -173,6 +207,62 @@ def test_squad_strength_sums_output_so_a_swap_moves_the_number():
     lean = pf.squad_strength(xi, forms, _no_history)["attack_goals"]
     forms[0] = scorer
     assert pf.squad_strength(xi, forms, _no_history)["attack_goals"] > lean
+
+
+def test_squad_strength_weights_the_xi_rating_by_minutes_played():
+    # ten reserves at 6.0 and one ever-present at 8.0: the flat mean barely
+    # moves off 6.0, the weighted one has to sit near the man who plays
+    xi = [_starter(i) for i in range(11)]
+    forms = {0: pf.player_form([_appearance(rating=8.0)])}
+    forms.update({i: pf.player_form([_appearance(rating=6.0)]) for i in range(1, 11)})
+    minutes = {0: 2000.0, **{i: 20.0 for i in range(1, 11)}}
+
+    flat = pf.squad_strength(xi, forms, _no_history)
+    weighted = pf.squad_strength(xi, forms, _no_history, weights=minutes)
+    assert flat["midfielder_rating"] == weighted["midfielder_rating"]  # untouched
+    assert flat["xi_weighted_rating"] < 6.3  # no weights: a plain mean
+    assert weighted["xi_weighted_rating"] > 7.4
+
+
+def test_weighted_mean_degrades_to_a_plain_mean_without_weights():
+    # matchday one: no minutes yet, and the feature must not go null there
+    assert pf.weighted_mean([(6.0, 0.0), (8.0, 0.0)]) == 7.0
+    assert pf.weighted_mean([]) is None
+
+
+def test_squad_strength_reports_both_ends_of_the_rating_distribution():
+    ratings = [9.0, 8.0, 7.0] + [5.0] * 5 + [4.0] * 3
+    xi = [_starter(i) for i in range(11)]
+    forms = {i: pf.player_form([_appearance(rating=r)]) for i, r in enumerate(ratings)}
+    block = pf.squad_strength(xi, forms, _no_history)
+    assert block["rating_top1"] == 9.0
+    assert block["rating_bottom3"] == 4.0
+
+
+def test_absence_impact_separates_how_good_from_how_much():
+    season_minutes = {0: 900.0, 1: 900.0, 2: 90.0}
+    forms = {
+        0: pf.player_form([_appearance(rating=8.0)]),
+        2: pf.player_form([_appearance(rating=8.0)]),
+    }
+    regular = pf.absence_impact([_starter(0)], season_minutes, forms, _no_history)
+    fringe = pf.absence_impact([_starter(2)], season_minutes, forms, _no_history)
+    # equally good players, very different amounts of the side
+    assert regular["absent_rating_mean"] == fringe["absent_rating_mean"] == 8.0
+    assert regular["absent_rating_weighted"] > 9 * fringe["absent_rating_weighted"]
+
+
+def test_absence_impact_imputes_a_missing_player_with_no_history():
+    average = {**dict.fromkeys(pf.PLAYER_FORM_FIELDS, 0.0), "rating": 6.2}
+    block = pf.absence_impact([_starter(7)], {7: 500.0}, {}, lambda row: average)
+    assert block["absent_rating_mean"] == 6.2
+
+
+def test_absence_impact_of_a_full_strength_side_is_not_null():
+    # nobody missing has to read as zero impact, not as an absent feature
+    block = pf.absence_impact([], {0: 500.0}, {}, _no_history)
+    assert block["absent_rating_weighted"] == 0.0
+    assert block["absent_rating_mean"] is None
 
 
 def test_rating_spread_needs_two_ratings():
