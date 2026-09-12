@@ -111,6 +111,80 @@ def get_team_history(
     return history
 
 
+def get_team_goal_volume(team_id: int, before: datetime, window: int) -> float:
+    """A team's total goals scored over its last `window` completed fixtures
+    strictly before `before` - feeds feature_lib.club_goals_relative(). Not
+    season-scoped, unlike get_team_history(): the v2 model's GOALS_WINDOW
+    (38) is close to a full season on purpose, so it's meant to span a season
+    boundary early in a new one rather than reset to nothing."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT CASE WHEN home_id = %s THEN home_goals ELSE away_goals END AS goals_for
+            FROM fixtures
+            WHERE (home_id = %s OR away_id = %s) AND starting_at < %s
+              AND home_goals IS NOT NULL AND away_goals IS NOT NULL
+            ORDER BY starting_at DESC
+            LIMIT %s
+            """,
+            (team_id, team_id, team_id, before, window),
+        )
+        return float(sum(row[0] for row in cur.fetchall()))
+
+
+def get_league_goal_volume_reference(league_id: int, before: datetime, window: int) -> float | None:
+    """The league's current cross-sectional mean of `get_team_goal_volume`
+    across the teams that have played in it before `before` - the serving-time
+    stand-in for feature_lib.LeagueRollingMean's rolling-200-historical-value
+    reference used at training time.
+
+    The two aren't the same computation, and that's fine here specifically:
+    LeagueRollingMean exists to strip out an archive-density trend that only
+    exists when scoring *past* dates across 25 years of backfill. Serving only
+    ever asks about "now", where every team's own recent matches are already
+    fully populated, so a live average across the league's current teams needs
+    no such correction and is far cheaper than replaying the historical walk
+    on every request."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH teams_in_league AS (
+                SELECT DISTINCT team_id FROM (
+                    SELECT home_id AS team_id FROM fixtures
+                    WHERE league_id = %(league_id)s AND starting_at < %(before)s
+                    UNION
+                    SELECT away_id AS team_id FROM fixtures
+                    WHERE league_id = %(league_id)s AND starting_at < %(before)s
+                ) t
+            ),
+            ranked AS (
+                SELECT
+                    tl.team_id,
+                    CASE WHEN f.home_id = tl.team_id THEN f.home_goals ELSE f.away_goals END
+                        AS goals_for,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY tl.team_id ORDER BY f.starting_at DESC
+                    ) AS rn
+                FROM teams_in_league tl
+                JOIN fixtures f
+                    ON (f.home_id = tl.team_id OR f.away_id = tl.team_id)
+                   AND f.starting_at < %(before)s
+                   AND f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL
+            ),
+            team_volumes AS (
+                SELECT team_id, SUM(goals_for) AS volume
+                FROM ranked
+                WHERE rn <= %(window)s
+                GROUP BY team_id
+            )
+            SELECT AVG(volume) FROM team_volumes
+            """,
+            {"league_id": league_id, "before": before, "window": window},
+        )
+        row = cur.fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+
 def list_upcoming_fixtures(start: datetime, end: datetime) -> list[FixtureRow]:
     """Fixtures kicking off in [start, end), soonest first (see
     PROJECT_SPEC.md Phase 4's Upcoming tab)."""

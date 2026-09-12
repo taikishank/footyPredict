@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, model
+from app import db, model, model_v2
 from app.config import CORS_ALLOWED_ORIGINS, EDGE_FLAG_THRESHOLD
 from app.features import NotEnoughHistoryError, build_match_features
 from app.live_prob import adjust_for_live_state
@@ -45,6 +45,14 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     db.pool.open()
     model.load_model()
+    try:
+        model_v2.load_model()
+    except Exception:
+        # v2 is a comparison feature, not the serving path - missing its
+        # artifact (e.g. ml/train_v2.py hasn't been run locally) shouldn't
+        # stop the API from starting. UpcomingFixture just reports a null
+        # probabilities_v2 when model_v2.is_loaded() is False.
+        logger.exception("failed to load v2 model - continuing without it")
     yield
     db.pool.close()
 
@@ -127,6 +135,14 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
         model_probs = model.predict_proba(features.vector)
         market, edge, flagged = _market_and_edge(features.fixture["fixture_id"], model_probs)
 
+        # The challenger rides along on the same feature build - it shares
+        # every column the incumbent uses, so serving both costs one extra
+        # predict_proba rather than a second trip to the database.
+        probs_v2, version_v2 = None, None
+        if model_v2.is_loaded():
+            probs_v2 = Probabilities(**model_v2.predict_proba(features.v2_vector))
+            version_v2 = model_v2.model_version()
+
         fixtures.append(
             UpcomingFixture(
                 fixture_id=features.fixture["fixture_id"],
@@ -139,6 +155,8 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
                 market=market,
                 edge=edge,
                 flagged=flagged,
+                probabilities_v2=probs_v2,
+                model_version_v2=version_v2,
             )
         )
 

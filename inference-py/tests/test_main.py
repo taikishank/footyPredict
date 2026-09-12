@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, model
+from app import db, main, model, model_v2
 from app.features import MatchFeatures, NotEnoughHistoryError
 
 FIXTURE = {
@@ -27,6 +27,12 @@ def _no_real_startup(monkeypatch):
     monkeypatch.setattr(model, "load_model", lambda: None)
     monkeypatch.setattr(model, "is_loaded", lambda: True)
     monkeypatch.setattr(model, "model_version", lambda: "test-model@1")
+    # v2's artifact may genuinely exist on disk (ml/train_v2.py writes one) -
+    # stub it closed by default so tests are isolated from local dev state;
+    # tests that care about the v2 path override is_loaded/predict_proba
+    # themselves.
+    monkeypatch.setattr(model_v2, "load_model", lambda: None)
+    monkeypatch.setattr(model_v2, "is_loaded", lambda: False)
 
 
 @pytest.fixture
@@ -193,6 +199,37 @@ def test_list_upcoming_fixtures(client, monkeypatch):
     assert body["fixtures"][0]["flagged"] is False
     assert body["fixtures"][1]["probabilities"] is None
     assert body["fixtures"][1]["model_version"] is None
+    # model_v2 isn't loaded in this test (no artifact on disk, no S3 creds),
+    # so the v2 fields should come back empty rather than erroring.
+    assert body["fixtures"][0]["probabilities_v2"] is None
+    assert body["fixtures"][0]["model_version_v2"] is None
+
+
+def test_list_upcoming_fixtures_includes_v2_prediction_when_loaded(client, monkeypatch):
+    monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
+    monkeypatch.setattr(
+        main,
+        "build_match_features",
+        lambda fixture_id: MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
+        ),
+    )
+    monkeypatch.setattr(
+        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+    )
+    monkeypatch.setattr(db, "get_odds", lambda fixture_id: None)
+    monkeypatch.setattr(model_v2, "is_loaded", lambda: True)
+    monkeypatch.setattr(
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+    )
+    monkeypatch.setattr(model_v2, "model_version", lambda: "match_outcome_model_v2.json@1")
+
+    resp = client.get("/fixtures/upcoming")
+    assert resp.status_code == 200
+    fx = resp.json()["fixtures"][0]
+
+    assert fx["probabilities_v2"] == {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+    assert fx["model_version_v2"] == "match_outcome_model_v2.json@1"
 
 
 def test_list_upcoming_fixtures_shows_odds_despite_not_enough_history(client, monkeypatch):

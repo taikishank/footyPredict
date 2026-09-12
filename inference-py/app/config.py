@@ -35,6 +35,17 @@ MODEL_LOCAL_PATH = Path(
     )
 )
 
+# Matches ml/train_v2.py: team form + club_goals_relative, saved locally to
+# ml/models/match_outcome_model_v2.json and uploaded to the same S3 bucket
+# under a different key so both artifacts coexist.
+MODEL_V2_S3_KEY = os.environ.get("MODEL_V2_S3_KEY", "2000_v2_club_goals/model.json")
+MODEL_V2_LOCAL_PATH = Path(
+    os.environ.get(
+        "MODEL_V2_LOCAL_PATH",
+        Path(__file__).resolve().parents[2] / "ml" / "models" / "match_outcome_model_v2.json",
+    )
+)
+
 # Angular dev server origins allowed to call this API cross-origin (see
 # app.ts's `ng serve` / environment.ts's apiBaseUrl). Comma-separated;
 # override via env once there's a real deployed frontend origin.

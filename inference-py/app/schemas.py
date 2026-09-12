@@ -43,6 +43,11 @@ class UpcomingFixture(BaseModel):
     market: Probabilities | None = None
     edge: Probabilities | None = None
     flagged: bool = False
+    # The v2 challenger's prediction (team form + club_goals_relative, see
+    # app/model_v2.py) shown alongside the incumbent's - None under the same
+    # condition as `probabilities`.
+    probabilities_v2: Probabilities | None = None
+    model_version_v2: str | None = None
 
 
 class UpcomingFixturesResponse(BaseModel):
@@ -54,3 +59,4 @@ class UpcomingFixturesResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     model_version: str | None = None
+

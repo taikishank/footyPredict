@@ -6,8 +6,21 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.db import FixtureRow, get_fixture, get_team_history
-from feature_lib import FORM_FIELD_ORDER, MAX_WINDOW, MIN_WINDOW, team_form
+from app.db import (
+    FixtureRow,
+    get_fixture,
+    get_league_goal_volume_reference,
+    get_team_goal_volume,
+    get_team_history,
+)
+from feature_lib import (
+    FORM_FIELD_ORDER,
+    GOALS_WINDOW,
+    MAX_WINDOW,
+    MIN_WINDOW,
+    club_goals_relative,
+    team_form,
+)
 
 
 class NotEnoughHistoryError(Exception):
@@ -25,6 +38,12 @@ class NotEnoughHistoryError(Exception):
 class MatchFeatures:
     fixture: FixtureRow
     vector: np.ndarray  # shape (1, 2 * len(FORM_FIELD_ORDER)), column order matches training
+    # v2 = vector's columns plus [home_club_goals_relative, away_club_goals_relative]
+    # (ml/train_v2.py's column order) - NaN entries where a league reference
+    # isn't available yet (XGBoost handles missing values natively). Optional
+    # so callers that only need the incumbent's vector (tests, mainly) don't
+    # have to fabricate one.
+    v2_vector: np.ndarray | None = None
 
 
 def build_match_features(fixture_id: int) -> MatchFeatures | None:
@@ -51,4 +70,19 @@ def build_match_features(fixture_id: int) -> MatchFeatures | None:
     row = [home_form[name] for name in FORM_FIELD_ORDER] + [
         away_form[name] for name in FORM_FIELD_ORDER
     ]
-    return MatchFeatures(fixture=fixture, vector=np.array([row], dtype=float))
+
+    league_ref = get_league_goal_volume_reference(
+        fixture["league_id"], fixture["starting_at"], GOALS_WINDOW
+    )
+    home_volume = get_team_goal_volume(fixture["home_id"], fixture["starting_at"], GOALS_WINDOW)
+    away_volume = get_team_goal_volume(fixture["away_id"], fixture["starting_at"], GOALS_WINDOW)
+    v2_row = row + [
+        club_goals_relative(home_volume, league_ref),
+        club_goals_relative(away_volume, league_ref),
+    ]
+
+    return MatchFeatures(
+        fixture=fixture,
+        vector=np.array([row], dtype=float),
+        v2_vector=np.array([[v if v is not None else np.nan for v in v2_row]], dtype=float),
+    )
