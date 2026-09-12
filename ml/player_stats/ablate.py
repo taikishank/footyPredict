@@ -12,6 +12,9 @@ follow-up questions that one raises and cannot settle:
   weighting counted absence against minutes-weighted absence, and flat
             per-position means against form-weighted ones - the rework of the
             aggregation that Phase 9's findings pointed at
+  involve   the three importance measures side by side - counting heads,
+            weighting by minutes, weighting by goal involvement - plus the
+            collinearity diagnostic that explains the result
 
 Every arm is trained on identical rows and an identical split and compared with
 the same paired bootstrap as the promotion bar itself, so the numbers here are
@@ -33,6 +36,9 @@ import train_challenger as tc  # noqa: E402
 from player_feature_lib import (  # noqa: E402
     ABSENCE_FIELD_ORDER,
     AVAILABILITY_BASE_FIELDS,
+    INVOLVEMENT_FIELD_ORDER,
+    INVOLVEMENT_SHARE_FIELDS,
+    INVOLVEMENT_VOLUME_FIELDS,
     AVAILABILITY_FIELD_ORDER,
     PERFORMANCE_BASE_FIELDS,
     PERFORMANCE_FIELD_ORDER,
@@ -228,7 +234,94 @@ def weighting(tier: str) -> None:
     _print_resolution(y, split)
 
 
-MODES = {"blocks": blocks, "features": features, "trim": trim, "weighting": weighting}
+def involve(tier: str) -> None:
+    """Goal involvement as the importance measure, against the other two.
+
+    `weighting` established that minutes-weighted absence is +0.981 correlated
+    with counted absence, because the key eleven are *selected* by minutes -
+    asking the same question twice. Goal involvements are not how those players
+    were picked and they concentrate far more steeply, so this is the measure
+    with variation independent of the team sheet.
+
+    Three absence arms, each *replacing* `key_players_absent` rather than
+    stacking on it, so each is a like-for-like swap of the importance measure:
+
+      counted      how many of the key eleven are missing
+      minutes      what share of the first team's playing time is missing
+      involvement  what share of the club's recent scoring is missing
+
+    The diagnostic at the end is half the point. If involvement absence is as
+    collinear with the count as minutes absence was, the null result needs no
+    further explanation; if it is not, then a genuinely independent measure has
+    been tried and the effect is simply absent.
+    """
+    df, form, sides, y, split = load(tier)
+    base = [n for n in AVAILABILITY_BASE_FIELDS]
+    without_count = [n for n in base if n != "key_players_absent"]
+
+    # The share arms are the swap test the findings asked for. The volume arms
+    # are here because the first run of this experiment conflated the two and
+    # credited the absence weighting with a gain that belonged entirely to club
+    # scoring volume - which is not a player feature at all. Separating them is
+    # the lesson, so the separation is now part of the experiment.
+    arms = {
+        "form only": form,
+        "counted": form + sides(base),
+        "minutes-weighted": form + sides(without_count + list(WEIGHTED_AVAILABILITY_FIELDS)),
+        "involvement shares": form + sides(without_count + list(INVOLVEMENT_SHARE_FIELDS)),
+        "+ club goals only": form + sides(base) + sides(["club_goals_relative"]),
+        "+ involvement volume": form + sides(base) + sides(INVOLVEMENT_VOLUME_FIELDS),
+        "shares + volume": form + sides(without_count + list(INVOLVEMENT_FIELD_ORDER)),
+        "everything": form + sides(AVAILABILITY_FIELD_ORDER),
+    }
+    results = {name: fit(df, cols, y, split) for name, cols in arms.items()}
+    report(results, [
+        ("form only", "counted"),
+        ("counted", "minutes-weighted"),
+        ("counted", "involvement shares"),
+        ("counted", "+ club goals only"),
+        ("counted", "+ involvement volume"),
+        ("+ club goals only", "+ involvement volume"),
+        ("+ involvement volume", "shares + volume"),
+        ("counted", "everything"),
+    ])
+    _print_resolution(y, split)
+    _involvement_diagnostic(df)
+
+
+def _involvement_diagnostic(df: pd.DataFrame) -> None:
+    """How much of each absence measure is not just the count restated.
+
+    A feature that correlates +0.98 with the column it replaces cannot carry
+    new information no matter how well-motivated it is, and that is a property
+    of the data worth printing next to the log loss rather than inferring from
+    it.
+    """
+    count = "home_sq_key_players_absent"
+    print("\nhow independent is each importance measure of the count?")
+    # The date column is not decoration: this project shipped an era proxy by
+    # accident once already, and the raw volume counts correlate +0.405 with the
+    # date before normalisation.
+    print(f"{'feature':30s} {'corr':>7} {'std':>8} {'residual std':>13} {'vs date':>8}")
+    for name in ("key_minutes_absent", "involvement_absent", "squad_involvement_absent",
+                 "xi_involvement_share", "top_player_absent", "top_scorer_absent",
+                 "involvement_volume_relative", "club_goals_relative"):
+        col = f"home_sq_{name}"
+        if col not in df.columns:
+            continue
+        r = df[col].corr(df[count])
+        std = df[col].std()
+        date_r = df[col].corr(df["date"].astype("int64"))
+        print(f"  {name:28s} {r:+.3f} {std:8.4f} {std * (1 - r**2) ** 0.5:13.4f} {date_r:+8.3f}")
+
+
+MODES = {
+    "blocks": blocks,
+    "features": features,
+    "trim": trim,
+    "weighting": weighting,
+    "involve": involve,
+}
 
 
 def main() -> None:

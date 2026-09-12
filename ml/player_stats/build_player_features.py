@@ -29,11 +29,14 @@ from player_feature_lib import (  # noqa: E402
     AVAILABILITY_FIELD_ORDER,
     MIN_APPEARANCES,
     PERFORMANCE_FIELD_ORDER,
-    LeagueExperience,
+    SQUAD_RECENCY_WINDOW,
+    ClubInvolvements,
+    LeagueRollingMean,
     PositionAverages,
     absence_impact,
     availability_form,
     impute_form,
+    involvement_form,
     key_players,
     numeric,
     player_form,
@@ -75,6 +78,21 @@ def _fixture_sides(df: pd.DataFrame):
         yield fixture_id, date, league_id, teams
 
 
+def _recent_squad(squads: list[frozenset[int]]) -> set[int]:
+    """Everyone who has played for the club across its recent team sheets."""
+    return {player_id for squad in squads for player_id in squad}
+
+
+def _involvements(team_rows: list[dict]) -> dict[int, float]:
+    """Goals + assists per player in one match, omitting the uninvolved."""
+    counted = {}
+    for row in team_rows:
+        total = (numeric(row.get("goals")) or 0.0) + (numeric(row.get("assists")) or 0.0)
+        if total > 0:
+            counted[row["player_id"]] = total
+    return counted
+
+
 def build() -> pd.DataFrame:
     df = pd.read_parquet(PLAYER_TABLE).sort_values(["date", "fixture_id"])
 
@@ -83,8 +101,14 @@ def build() -> pd.DataFrame:
     recent_xis: dict[int, list[frozenset[int]]] = {}
     season_minutes: dict[tuple[int, int], dict[int, float]] = {}
     last_played: dict[int, pd.Timestamp] = {}
+    recent_squads: dict[int, list[frozenset[int]]] = {}
     averages = PositionAverages()
-    league_experience = LeagueExperience()
+    league_experience = LeagueRollingMean()
+    involvements = ClubInvolvements()
+    # One reference per volume column. Both are sums over a 38-match window, so
+    # both inherit the archive's density ramp and both need dividing out.
+    league_volume = LeagueRollingMean()
+    league_goals = LeagueRollingMean()
 
     rows = []
     for fixture_id, date, league_id, teams in _fixture_sides(df):
@@ -116,6 +140,21 @@ def build() -> pd.DataFrame:
             # player's own rating has to look him up somewhere.
             team_minutes = season_minutes.get((team_id, season_id), {})
             xi_ids = {r["player_id"] for r in xi}
+
+            shares, _sample = involvements.shares(team_id)
+            available.update(
+                involvement_form(
+                    xi=xi,
+                    key_ids=key_players(team_minutes),
+                    recent_squad=_recent_squad(recent_squads.get(team_id, [])),
+                    shares=shares,
+                    volumes=involvements.volumes(team_id),
+                    references=(
+                        league_volume.reference(league_id),
+                        league_goals.reference(league_id),
+                    ),
+                )
+            )
             absent = [
                 {"player_id": pid, "position": player_history[pid][-1]["position"]}
                 for pid in key_players(team_minutes)
@@ -145,6 +184,28 @@ def build() -> pd.DataFrame:
                 )
             starters = frozenset(r["player_id"] for r in team_rows if r["is_starting"])
             recent_xis.setdefault(team_id, []).append(starters)
+
+            # Substitutes included: a club's goalscorers are not all starters,
+            # and "is he still at the club" is a question about the squad.
+            played_ids = frozenset(
+                r["player_id"] for r in team_rows if (numeric(r.get("minutes_played")) or 0) > 0
+            )
+            squads = recent_squads.setdefault(team_id, [])
+            squads.append(played_ids)
+            if len(squads) > SQUAD_RECENCY_WINDOW:
+                del squads[:-SQUAD_RECENCY_WINDOW]
+
+            scored = _involvements(team_rows)
+            goals = sum(numeric(r.get("goals")) or 0.0 for r in team_rows)
+            involvements.update(team_id, scored, goals)
+
+            # The league references see this club's *updated* window, which is
+            # correct: they are a level to compare against, not a prediction,
+            # and every fixture's own features were emitted above before any of
+            # this ran.
+            volume, goal_volume = involvements.volumes(team_id)
+            league_volume.update(league_id, volume)
+            league_goals.update(league_id, goal_volume)
             minutes = season_minutes.setdefault((team_id, season_id), {})
             for r in team_rows:
                 played = numeric(r.get("minutes_played"))

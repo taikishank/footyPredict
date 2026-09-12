@@ -153,9 +153,127 @@ def test_availability_experience_is_relative_to_the_league():
 
 
 def test_availability_emits_every_declared_field():
+    # availability_form() owns the minutes-derived fields; the involvement ones
+    # are merged in by the builder, and together they are the tier's columns
     xi = [_starter(i) for i in range(11)]
     block = pf.availability_form(xi, [], {}, {}, 7, 100.0)
-    assert set(block) == set(pf.AVAILABILITY_FIELD_ORDER)
+    assert set(block) == set(pf.AVAILABILITY_BASE_FIELDS) | set(
+        pf.WEIGHTED_AVAILABILITY_FIELDS
+    )
+    assert set(pf.AVAILABILITY_FIELD_ORDER) == set(block) | set(
+        pf.INVOLVEMENT_FIELD_ORDER
+    )
+
+
+# --- goal involvement --------------------------------------------------------
+
+
+def test_club_involvements_share_is_over_the_window_total():
+    club = pf.ClubInvolvements()
+    club.update(7, {1: 2.0}, goals=2.0)  # a brace
+    club.update(7, {1: 1.0, 2: 1.0}, goals=1.0)
+    shares, sample = club.shares(7)
+    assert sample == 4.0
+    assert shares[1] == 0.75
+    assert shares[2] == 0.25
+
+
+def test_club_involvements_roll_off_the_window():
+    club = pf.ClubInvolvements()
+    club.update(7, {1: 1.0}, goals=1.0)
+    for _ in range(pf.INVOLVEMENT_WINDOW):
+        club.update(7, {2: 1.0}, goals=1.0)
+    shares, _ = club.shares(7)
+    assert 1 not in shares  # the old match has aged out entirely
+    assert shares[2] == 1.0
+
+
+def test_club_involvements_of_a_goalless_club_are_empty_not_zero_division():
+    club = pf.ClubInvolvements()
+    club.update(7, {}, goals=0.0)
+    assert club.shares(7) == ({}, 0.0)
+
+
+def test_involvement_absence_separates_the_top_scorer_from_the_eleventh_man():
+    # player 0 has half the club's goals, player 9 has none
+    shares = {0: 0.5, 1: 0.3, 2: 0.2}
+    squad = set(range(12))
+    key_ids = list(range(11))
+
+    without_scorer = [_starter(i) for i in range(1, 12)]
+    without_fringe = [_starter(i) for i in range(10)] + [_starter(11)]
+
+    scorer = pf.involvement_form(without_scorer, key_ids, squad, shares, (20.0, 12.0), (20.0, 12.0))
+    fringe = pf.involvement_form(without_fringe, key_ids, squad, shares, (20.0, 12.0), (20.0, 12.0))
+
+    assert scorer["involvement_absent"] == 0.5
+    assert fringe["involvement_absent"] == 0.0
+    assert (scorer["top_scorer_absent"], fringe["top_scorer_absent"]) == (1.0, 0.0)
+    assert scorer["xi_involvement_share"] == 0.5
+
+
+def test_involvement_absence_sees_a_scorer_the_minutes_ranking_misses():
+    # the whole point of the third measure: a rotated striker with a third of
+    # the goals is not in the top eleven by minutes, so a minutes-based feature
+    # cannot see him at all
+    shares = {50: 0.34, 0: 0.33, 1: 0.33}
+    key_ids = list(range(11))  # 50 is not among them
+    squad = set(range(11)) | {50}
+    xi = [_starter(i) for i in range(11)]
+
+    block = pf.involvement_form(xi, key_ids, squad, shares, (30.0, 18.0), (30.0, 18.0))
+    assert block["involvement_absent"] == 0.0  # invisible to the key-eleven view
+    assert block["squad_involvement_absent"] == 0.34  # but not to the squad view
+    assert block["top_scorer_absent"] == 1.0
+
+
+def test_involvement_absence_ignores_a_departed_scorer():
+    # last season's top scorer still holds window share after a summer move; he
+    # must not read as absent every week for the rest of his career
+    shares = {99: 0.6, 0: 0.4}
+    xi = [_starter(i) for i in range(11)]
+    block = pf.involvement_form(xi, list(range(11)), set(range(11)), shares, (25.0, 15.0), (25.0, 15.0))
+    assert block["squad_involvement_absent"] == 0.0
+    assert block["top_scorer_absent"] == 0.0  # 0 is the top scorer still at the club
+
+
+def test_involvement_form_reports_its_own_sample_size():
+    # the early archive has almost no assists recorded; a confident 0.0 share
+    # there has to be distinguishable from a real one
+    block = pf.involvement_form([_starter(0)], [], set(), {}, (0.0, 0.0), (None, None))
+    assert block["squad_involvement_absent"] == 0.0
+    assert block["top_scorer_absent"] == 0.0
+    # no league level to compare against yet, so the volume columns are absent
+    # rather than a raw count that would smuggle the archive's ramp in
+    assert block["involvement_volume_relative"] is None
+    assert block["club_goals_relative"] is None
+
+
+def test_involvement_form_emits_every_declared_field():
+    block = pf.involvement_form([_starter(0)], [0], {0}, {0: 1.0}, (5.0, 3.0), (4.0, 2.0))
+    assert set(block) == set(pf.INVOLVEMENT_FIELD_ORDER)
+
+
+def test_involvement_volume_is_relative_to_the_league():
+    # 60 involvements against a league running at 40 is a side scoring half
+    # again as freely as its division, and carries no archive-density trend
+    block = pf.involvement_form([_starter(0)], [], set(), {}, (60.0, 36.0), (40.0, 24.0))
+    assert block["involvement_volume_relative"] == 1.5
+    assert block["club_goals_relative"] == 1.5
+
+
+def test_club_involvements_track_goals_apart_from_involvements():
+    club = pf.ClubInvolvements()
+    club.update(7, {1: 2.0, 2: 1.0}, goals=2.0)  # two goals, one assisted
+    club.update(7, {3: 1.0}, goals=1.0)
+    assert club.volumes(7) == (4.0, 3.0)
+
+
+def test_club_involvement_volumes_roll_off_the_window():
+    club = pf.ClubInvolvements()
+    for _ in range(pf.INVOLVEMENT_WINDOW + 10):
+        club.update(7, {1: 1.0}, goals=1.0)
+    assert club.volumes(7) == (float(pf.INVOLVEMENT_WINDOW), float(pf.INVOLVEMENT_WINDOW))
 
 
 # --- squad strength ----------------------------------------------------------
@@ -299,12 +417,12 @@ def test_position_averages_ignore_players_with_no_rating():
 
 
 def test_league_experience_tracks_the_ramp_rather_than_lagging_it():
-    experience = pf.LeagueExperience()
+    experience = pf.LeagueRollingMean()
     assert experience.reference(8) is None
-    for _ in range(pf.LeagueExperience.WINDOW * 2):
+    for _ in range(pf.LeagueRollingMean.WINDOW * 2):
         experience.update(8, 20.0)
     assert experience.reference(8) == 20.0
-    for _ in range(pf.LeagueExperience.WINDOW):
+    for _ in range(pf.LeagueRollingMean.WINDOW):
         experience.update(8, 120.0)
     # the early, low-appearance era has aged out entirely
     assert experience.reference(8) == 120.0

@@ -16,6 +16,8 @@ Reproduce with:
 ./inference-py/bin/python ml/player_stats/ablate.py trim     --tier performance
 ./inference-py/bin/python ml/player_stats/ablate.py weighting --tier availability
 ./inference-py/bin/python ml/player_stats/ablate.py weighting --tier performance
+./inference-py/bin/python ml/player_stats/ablate.py involve   --tier availability
+./inference-py/bin/python ml/player_stats/ablate.py involve   --tier performance
 ```
 
 Nothing here touches `ml/feature_lib.py`, `ml/build_features.py` or `ml/train.py`.
@@ -30,21 +32,26 @@ untouched; challenger runs go to `liveedge-match-outcome-playerstats`.
 
 | comparison | log loss reduction | 95% CI | verdict |
 |---|---|---|---|
-| team form → + availability block (2006+, 7,091 val fixtures) | **+0.00618** | [+0.00276, +0.00982] | clears |
-| team form → + availability block (2016+, 3,601 val fixtures) | **+0.00731** | [+0.00304, +0.01142] | clears |
-| + availability → + performance block (2016+) | +0.00060 | [−0.00393, +0.00539] | **within noise** |
+| team form → + availability block (2006+, 7,091 val fixtures) | **+0.01057** | [+0.00604, +0.01520] | clears |
+| team form → + availability block (2016+, 3,601 val fixtures) | **+0.01204** | [+0.00642, +0.01778] | clears |
+| + availability → + performance block (2016+) | −0.00150 | [−0.00536, +0.00234] | **within noise** |
 
-The 18 minutes-derived availability features capture the entire gain. The 46
-rating-derived performance features — the ones that cost the 2016 cutoff and
-half the training history — add nothing measurable on top.
+The availability block clears; the 46 rating-derived performance features — the
+ones that cost the 2016 cutoff and half the training history — add nothing
+measurable on top, and the point estimate is now mildly negative.
 
-(Both blocks grew in the weighted rework below, from 14 and 36 columns; the
-earlier numbers for the narrower blocks were +0.00608, +0.00690 and +0.00049 —
-the same verdicts, and the differences are an order of magnitude inside what
-this split resolves.)
+**But the block's gain is not mostly about who is playing.** Of the +0.01057:
 
-Reweighting the aggregations so that players are no longer interchangeable
-(below) does not change that: it is a null result, and an informative one.
+| component | gain | needs the lineup archive? |
+|---|---|---|
+| counted key-player absence, rotation, XI experience | +0.0061 | yes |
+| `club_goals_relative` — club goals over 38 matches, league-normalised | +0.0035 | **no** |
+| every per-player importance weighting tried (minutes, goal share) | +0.0007 | yes |
+
+The last row is the spec's central claim, and three separate importance measures
+put it at the same value: about a seventh of what a column derivable from the
+fixture scores alone is worth. Both null results are written up below, along
+with the near-miss that produced the middle row by accident.
 
 ---
 
@@ -288,6 +295,89 @@ availability tier clears the bar, the performance tier does not.
 
 ---
 
+## Goal involvement: the third importance measure, and an accident
+
+`weighting` closed the minutes-weighted version by showing it was +0.981
+correlated with the count. The remaining candidate was an importance measure
+that is *not* how the key players were selected: each player's share of the
+club's goals and assists over its last 38 matches (`ClubInvolvements`).
+
+This measure really is independent. `squad_involvement_absent` correlates only
++0.189 with the count, keeping 0.142 of its 0.145 standard deviation after the
+count is removed — against minutes-weighted absence's 0.027 of 0.139. And it
+sees what a minutes ranking cannot: the club's leading scorer is out of the XI
+**27%** of the time, where its most-used player by minutes is out only 8.7% of
+the time.
+
+It still does not help.
+
+| arm | cols | 2006+ log loss | vs. counted | 2016+ | vs. counted |
+|---|---|---|---|---|---|
+| counted absence | 68 | 0.99371 | — | 0.99643 | — |
+| minutes-weighted | 70 | 0.99368 | +0.00003 | 0.99582 | +0.00062 |
+| **involvement shares** | 74 | 0.99301 | **+0.00070** | 0.99563 | **+0.00080** |
+| + club goals volume | 70 | 0.99025 | **+0.00346**, clears | 0.99279 | +0.00364 |
+| + involvement volume | 72 | 0.99043 | +0.00328, clears | 0.99311 | +0.00332 |
+| shares + volume | 78 | 0.98925 | +0.00464 | 0.99179 | +0.00596 |
+| everything | 84 | 0.98922 | +0.00449, clears | 0.99130 | +0.00513, clears |
+
+**All four share features together buy +0.0007.** Three importance measures have
+now been tried — counting heads, weighting by playing time, weighting by goal
+contribution — and they are worth the same amount. §1's claim that a side
+missing its top scorer should look different from a side missing a squad player
+is not supported by this data at this resolution, and the explanation is no
+longer "the weight is wrong": the third measure had genuinely independent
+variation and still changed nothing.
+
+### The accident, which is the useful part
+
+The first run of this experiment appeared to *double* the availability block's
+gain — +0.01162 against +0.00608. It was wrong, and the way it was wrong is
+worth recording.
+
+A fifth column had been added as bookkeeping: `involvement_sample`, the club's
+total involvements in the window, included so a model could discount the thin
+early archive instead of being handed a confident 0.0. It carried the entire
+gain. Dropping it left +0.00070; on its own it gave +0.00500.
+
+That column correlates **+0.405 with the fixture date**, because the archive's
+goal and assist coverage fills up over time — the same shape as the career
+appearance bug recorded below. So the first conclusion was that the era proxy
+had reappeared. **It had not**, and the check that proves it is worth keeping:
+handing the model a bare fixture date instead buys **−0.00035**, nothing. A
+clock is not what the column was worth.
+
+What it actually carries is *club scoring volume over 38 matches* — long-horizon
+team strength, which the incumbent's 3-8 match form window cannot express.
+Normalising it by its league's recent level (the `LeagueRollingMean` device
+already used for experience) drops the date correlation to −0.017 and the gain
+survives at +0.00346. Both the raw and normalised forms are worth about the
+same, which is what says the signal is the window length rather than the
+normalisation.
+
+### Three consequences
+
+**It is not a player feature.** `club_goals_relative` needs goals per club per
+match. Nothing else — no team sheets, no per-player attribution, no lineup
+archive. It is computable from the fixture scores the incumbent already ingests.
+
+**Assists add nothing to it.** Goals-only against goals-plus-assists is
+−0.00018 on 2006+ and −0.00032 on 2016+. The cheaper column is the better one,
+which also means this does not depend on the assist coverage that only begins
+in 2008-09.
+
+**It is the largest single effect this phase has found outside the availability
+block** — +0.0035, against +0.0061 for the whole counted availability block and
++0.0007 for everything built on per-player goal shares. The lineup archive cost
+Phase 8 a backfill; this column would have cost a `GROUP BY`.
+
+What it points at is a team-form question, not a squad one: **the incumbent's
+window is too short for scoring rate.** `MAX_WINDOW = 8` against 38 here. That
+is a one-build experiment on `ml/feature_lib.py` and it does not belong to
+Phase 9, but it is the most promising thing on this list.
+
+---
+
 ## Design decisions taken
 
 **Two stages, two artifacts.** `build_player_table.py` flattens all 41,777
@@ -358,14 +448,17 @@ was real and only its parameterisation was leaking.
 ## Open items for Phase 10
 
 1. ~~**Key-player absence needs a better importance measure than season
-   minutes.**~~ **Tested and closed** — see "The weighted rework" above. A
-   minutes-weighted absence feature correlates +0.981 with the count it
-   replaced and changes nothing, because the key eleven are selected by minutes
-   in the first place. The open item that survives is narrower and harder: an
-   importance measure with *independent* variation. Goal involvements are in
-   the cache already; a real injury list is not, and "absent from the team
-   sheet" conflates injury with rotation, which the 6.96-vs-7.03 rating
-   comparison above shows is the dominant case.
+   minutes.**~~ **Closed, twice.** Minutes-weighted absence is +0.981
+   correlated with the count and changes nothing. Goal-involvement-weighted
+   absence *is* independent (+0.189 correlated, 98% of its variance surviving
+   the count) and still changes nothing: +0.0007 across four features, on both
+   tiers. Three importance measures, one value. What remains is not a better
+   weight but a better *definition of absent*: the team sheet cannot separate
+   injury from rotation, and the absentees average a 6.96 rating against the
+   fielded XI's 7.03, so "key player absent" in this archive mostly means
+   "rested". A real injury or suspension list would be a different feature, not
+   another parameterisation of this one — and Phase 10's poller is what would
+   make collecting one possible.
 2. **The performance tier should not be carried forward as-is.** It costs the
    2016 cutoff, halves the training set, and buys nothing. The three
    explanations worth ruling out now have been: column count (`trim`, no k
@@ -383,6 +476,17 @@ was real and only its parameterisation was leaking.
 4. **`days_since_last_match` reaches 5,942 days** for a club returning from a
    long absence from the top five leagues. Trees handle it, but it is worth
    knowing the column is not the winter-break indicator it looks like.
-5. **Positions are missing on ~15% of 2006–2015 starters** and ~0.03% of 2016+
+5. **The incumbent's form window is probably too short for scoring rate.**
+   `club_goals_relative` — club goals over 38 matches, normalised by the
+   league's recent level — is worth +0.0035 and is the most important single
+   column in the challenger, above every team-form feature. It needs no lineup
+   data at all, only goals per club per match, so it belongs in
+   `ml/feature_lib.py` rather than here; `MAX_WINDOW = 8` against 38 is the
+   thing to test, and raw-versus-normalised being worth the same says the
+   window length is what matters. Cheapest promising experiment on this list,
+   and the one most likely to help the shipped model. Untouched in Phase 9
+   because the incumbent's training input had to stay byte-identical.
+
+6. **Positions are missing on ~15% of 2006–2015 starters** and ~0.03% of 2016+
    ones. The availability tier is position-agnostic so this costs nothing today;
    it would matter if position-aware features were extended back before 2016.

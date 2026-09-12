@@ -41,6 +41,19 @@ MIN_APPEARANCES = 3
 # Team sheets looked at when deciding what this club's "settled" XI is.
 MODAL_XI_WINDOW = 5
 
+# Club matches over which goal involvements are accumulated. A season's worth,
+# and deliberately not season-to-date: in August a season-to-date share is one
+# goal out of three and unusable, which is exactly when squads change most.
+# Spanning the boundary costs us a departed player keeping his share for a few
+# weeks, which is why involvement absence is also reported against the club's
+# recent squad rather than against everyone who ever scored in the window.
+INVOLVEMENT_WINDOW = 38
+
+# Club matches a player must have appeared in to count as still being at the
+# club. Keeps a summer departure, and a long-term injury, from reading as a
+# fresh absence every week for months.
+SQUAD_RECENCY_WINDOW = 5
+
 # How many of a squad's most-used players count as the ones whose absence is
 # worth a feature.
 KEY_PLAYER_COUNT = 11
@@ -135,7 +148,39 @@ WEIGHTED_AVAILABILITY_FIELDS = (
     "top_player_absent",
 )
 
-AVAILABILITY_FIELD_ORDER = AVAILABILITY_BASE_FIELDS + WEIGHTED_AVAILABILITY_FIELDS
+# The third importance measure, and the one with variation independent of the
+# team sheet. The weighted rework failed because ranking players by season
+# minutes and then weighting them by season minutes asks the same question
+# twice: key_minutes_absent came out +0.981 correlated with the count it
+# replaced. Goal involvements are not how the key players were selected, and
+# they concentrate very differently - a squad's minutes are spread over eleven
+# near-equal starters, its goals are not.
+# The share features - who is missing, weighted by scoring contribution.
+INVOLVEMENT_SHARE_FIELDS = (
+    "involvement_absent",
+    "squad_involvement_absent",
+    "top_scorer_absent",
+    "xi_involvement_share",
+)
+
+# The volume features, which are a different animal entirely and were found by
+# accident: how much this club has scored over the window, normalised by its
+# league's recent level. These are club-level, not player-level - no lineup
+# archive is needed to compute the goals-only one - and they are where the
+# measurable gain in this block actually lives. Kept relative rather than raw
+# because the raw totals correlate +0.405 with the fixture date (the archive
+# fills up), and this project has already been bitten once by shipping a count
+# whose level drifts with the observation window.
+INVOLVEMENT_VOLUME_FIELDS = (
+    "involvement_volume_relative",
+    "club_goals_relative",
+)
+
+INVOLVEMENT_FIELD_ORDER = INVOLVEMENT_SHARE_FIELDS + INVOLVEMENT_VOLUME_FIELDS
+
+AVAILABILITY_FIELD_ORDER = (
+    AVAILABILITY_BASE_FIELDS + WEIGHTED_AVAILABILITY_FIELDS + INVOLVEMENT_FIELD_ORDER
+)
 
 
 def modal_xi(recent_xis: list[frozenset[int]]) -> set[int]:
@@ -154,10 +199,17 @@ def modal_xi(recent_xis: list[frozenset[int]]) -> set[int]:
     return set(ranked[:11])
 
 
-class LeagueExperience:
-    """Rolling mean appearance count of a league's starters, as of now.
+class LeagueRollingMean:
+    """A league's recent mean of some per-club quantity, as of now.
 
-    Raw career appearances cannot be used as a feature directly. Our archive
+    Used for two different columns, which is why it is not named after either:
+    XI experience and club goal volume. Both are raw counts whose league-wide
+    level drifts with the archive rather than with football, and dividing by
+    this reference is what turns such a count into a comparison against the
+    sides actually being played.
+
+    The case that established the pattern: raw career appearances cannot be
+    used as a feature directly. Our archive
     starts in 2006, so a 2006 starter with ten seasons behind him reads as a
     debutant and the league-wide mean climbs from ~23 in 2006 to ~120 by 2018
     purely as the observation window fills up. That ramp correlates +0.50 with
@@ -176,9 +228,9 @@ class LeagueExperience:
     def __init__(self) -> None:
         self._recent: dict[int, list[float]] = {}
 
-    def update(self, league_id: int, xi_mean_appearances: float) -> None:
+    def update(self, league_id: int, value: float) -> None:
         recent = self._recent.setdefault(league_id, [])
-        recent.append(xi_mean_appearances)
+        recent.append(value)
         if len(recent) > self.WINDOW:
             del recent[: -self.WINDOW]
 
@@ -256,6 +308,130 @@ def availability_form(
         # (FINDINGS_DATA_AVAILABILITY.md, Ligue 1 2019/20).
         "days_since_last_match": days_since_last_match,
     }
+
+
+class ClubInvolvements:
+    """A club's goal involvements over its last INVOLVEMENT_WINDOW matches.
+
+    Involvement is goals + assists, which is the closest thing in this archive
+    to "how much of the team's attacking output goes through this player". Held
+    per match rather than as a running total so the window can roll; the share
+    is recomputed on read, which costs a sum over ~30 players and happens twice
+    per fixture.
+
+    A caveat that belongs in the code rather than only in the findings: goals
+    are populated from 2005 but assists only from 2008-09, and both undercount
+    before 2016 (~2.4 goals per fixture against a true ~2.7). So in the early
+    archive this is closer to a goal share than an involvement share. The
+    `involvement_sample` feature exposes the window's total so a model can
+    discount the thin era rather than being told a confident 0.0.
+    """
+
+    def __init__(self) -> None:
+        self._matches: dict[int, list[dict[int, float]]] = {}
+        self._goals: dict[int, list[float]] = {}
+
+    def update(self, team_id: int, involvements: dict[int, float], goals: float) -> None:
+        matches = self._matches.setdefault(team_id, [])
+        matches.append(involvements)
+        if len(matches) > INVOLVEMENT_WINDOW:
+            del matches[:-INVOLVEMENT_WINDOW]
+
+        # Club goals are kept separately from the per-player involvements
+        # because the volume they produce turned out to matter far more than
+        # the shares, and a goals-only version of it needs no player-level
+        # attribution at all - see FINDINGS_PHASE9.md on what that implies.
+        scored = self._goals.setdefault(team_id, [])
+        scored.append(goals)
+        if len(scored) > INVOLVEMENT_WINDOW:
+            del scored[:-INVOLVEMENT_WINDOW]
+
+    def totals(self, team_id: int) -> dict[int, float]:
+        totals: dict[int, float] = {}
+        for match in self._matches.get(team_id, ()):
+            for player_id, count in match.items():
+                totals[player_id] = totals.get(player_id, 0.0) + count
+        return totals
+
+    def volumes(self, team_id: int) -> tuple[float, float]:
+        """The club's (involvements, goals) over the window.
+
+        Both are sums over up to INVOLVEMENT_WINDOW matches, so in the thin
+        early archive they are lower for reasons that have nothing to do with
+        the club. That is what the league reference in `involvement_form` is
+        for; the raw figures are never emitted as features.
+        """
+        return (
+            sum(sum(match.values()) for match in self._matches.get(team_id, ())),
+            sum(self._goals.get(team_id, ())),
+        )
+
+    def shares(self, team_id: int) -> tuple[dict[int, float], float]:
+        """Each player's share of the club's window involvements, and the total.
+
+        The total comes back alongside because a share of nothing is not the
+        same as a share of nothing much, and the caller has to be able to tell
+        0.0-because-nobody-scored from 0.0-because-this-player-did-not.
+        """
+        totals = self.totals(team_id)
+        sample = sum(totals.values())
+        if sample <= 0:
+            return {}, 0.0
+        return {p: c / sample for p, c in totals.items()}, sample
+
+
+def involvement_form(
+    xi: list[dict],
+    key_ids: list[int],
+    recent_squad: set[int],
+    shares: dict[int, float],
+    volumes: tuple[float, float],
+    references: tuple[float | None, float | None],
+) -> dict:
+    """Absence weighted by goal involvement rather than by playing time.
+
+    Two absence variants on purpose, because they isolate different things:
+
+    `involvement_absent` keeps the existing key-eleven-by-season-minutes
+    definition of who counts as missing and changes *only* the weight, so it is
+    a clean swap against `key_players_absent` and `key_minutes_absent`.
+
+    `squad_involvement_absent` drops the minutes-based selection entirely and
+    asks how much of the club's recent scoring is not on the pitch, over anyone
+    who has played in the last SQUAD_RECENCY_WINDOW matches. This is the version
+    with variation independent of the team sheet - a rotated striker with a
+    third of the club's goals is invisible to a minutes ranking and dominant
+    here - and therefore the one that actually tests spec section 1.
+
+    `recent_squad` is every player who has appeared for the club recently, which
+    is what keeps a summer departure or a long-term injury from being counted as
+    a fresh absence indefinitely.
+
+    `volumes` and `references` carry the club's (involvements, goals) over the
+    window and its league's recent mean of each. The two volume features are the
+    ones that measurably help, and they are not really player features - see the
+    note on INVOLVEMENT_VOLUME_FIELDS.
+    """
+    ids = {row["player_id"] for row in xi}
+
+    ranked = sorted(shares, key=lambda p: -shares[p])
+    top_scorer = next((p for p in ranked if p in recent_squad), None)
+
+    return {
+        "involvement_absent": sum(shares.get(p, 0.0) for p in key_ids if p not in ids),
+        "squad_involvement_absent": sum(
+            share for p, share in shares.items() if p in recent_squad and p not in ids
+        ),
+        "top_scorer_absent": float(top_scorer is not None and top_scorer not in ids),
+        "xi_involvement_share": sum(shares.get(p, 0.0) for p in ids),
+        "involvement_volume_relative": _relative(volumes[0], references[0]),
+        "club_goals_relative": _relative(volumes[1], references[1]),
+    }
+
+
+def _relative(value: float, reference: float | None) -> float | None:
+    """A count against its league's recent level, or None before one exists."""
+    return value / reference if reference else None
 
 
 # --- performance tier --------------------------------------------------------
