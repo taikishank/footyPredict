@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, model, model_v2
+from app import db, main, model, model_comparison, model_v2
 from app.features import MatchFeatures, NotEnoughHistoryError
 
 FIXTURE = {
@@ -300,6 +300,50 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
         "flagged": True,
         "prices": {"home_win": 2.0, "draw": 3.6, "away_win": 4.5},
     }
+
+
+def test_get_model_comparison(client, monkeypatch):
+    monkeypatch.setattr(
+        model_comparison,
+        "latest_availability_comparison",
+        lambda: {
+            "run_id": "abc123",
+            "n_train_rows": 28362,
+            "n_val_rows": 7091,
+            "incumbent_log_loss": 0.99979,
+            "incumbent_brier": 0.59675,
+            "challenger_log_loss": 0.98922,
+            "challenger_brier": 0.58944,
+            "log_loss_improvement": 0.01057,
+            "ci_low": 0.00604,
+            "ci_high": 0.01520,
+            "p_better": 1.0,
+            "clears_promotion_bar": True,
+        },
+    )
+
+    resp = client.get("/models/comparison")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["incumbent"] == {"label": "Team form", "log_loss": 0.99979, "brier": 0.59675}
+    assert body["challenger"] == {
+        "label": "Team form + availability",
+        "log_loss": 0.98922,
+        "brier": 0.58944,
+    }
+    assert body["clears_promotion_bar"] is True
+
+
+def test_get_model_comparison_404_when_no_run_logged(client, monkeypatch):
+    def _raise():
+        raise model_comparison.NoComparisonRunError("no availability-tier run logged yet")
+
+    monkeypatch.setattr(model_comparison, "latest_availability_comparison", _raise)
+
+    resp = client.get("/models/comparison")
+
+    assert resp.status_code == 404
 
 
 def test_ws_live_prediction_closes_when_fixture_missing(client, monkeypatch):

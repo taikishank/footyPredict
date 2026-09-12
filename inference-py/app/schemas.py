@@ -60,3 +60,27 @@ class HealthResponse(BaseModel):
     status: str
     model_version: str | None = None
 
+
+class ModelPerformance(BaseModel):
+    label: str
+    log_loss: float
+    brier: float
+
+
+class ModelComparisonResponse(BaseModel):
+    """Offline validation performance of the incumbent (team form) model
+    against the availability-tier challenger, from the latest
+    ml/player_stats/train_challenger.py run logged to MLflow. Not live
+    predictions - the challenger isn't served yet (needs the Phase 10 lineup
+    poller); see app/model_comparison.py."""
+
+    run_id: str
+    n_train_rows: int
+    n_val_rows: int
+    incumbent: ModelPerformance
+    challenger: ModelPerformance
+    log_loss_improvement: float
+    ci_low: float
+    ci_high: float
+    p_better: float
+    clears_promotion_bar: bool

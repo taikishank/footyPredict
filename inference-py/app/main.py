@@ -16,12 +16,14 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, model, model_v2
+from app import db, model, model_comparison, model_v2
 from app.config import CORS_ALLOWED_ORIGINS, EDGE_FLAG_THRESHOLD
 from app.features import NotEnoughHistoryError, build_match_features
 from app.live_prob import adjust_for_live_state
 from app.schemas import (
     HealthResponse,
+    ModelComparisonResponse,
+    ModelPerformance,
     LivePredictionResponse,
     PredictionResponse,
     Probabilities,
@@ -164,6 +166,38 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
 
     return UpcomingFixturesResponse(
         generated_at=now, window_days=_UPCOMING_WINDOW.days, fixtures=fixtures
+    )
+
+
+@app.get("/models/comparison", response_model=ModelComparisonResponse)
+def get_model_comparison() -> ModelComparisonResponse:
+    """The latest offline incumbent-vs-challenger comparison logged by
+    ml/player_stats/train_challenger.py. This is validation performance, not
+    live predictions, since the challenger isn't served yet."""
+    try:
+        comparison = model_comparison.latest_availability_comparison()
+    except model_comparison.NoComparisonRunError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return ModelComparisonResponse(
+        run_id=comparison["run_id"],
+        n_train_rows=comparison["n_train_rows"],
+        n_val_rows=comparison["n_val_rows"],
+        incumbent=ModelPerformance(
+            label="Team form",
+            log_loss=comparison["incumbent_log_loss"],
+            brier=comparison["incumbent_brier"],
+        ),
+        challenger=ModelPerformance(
+            label="Team form + availability",
+            log_loss=comparison["challenger_log_loss"],
+            brier=comparison["challenger_brier"],
+        ),
+        log_loss_improvement=comparison["log_loss_improvement"],
+        ci_low=comparison["ci_low"],
+        ci_high=comparison["ci_high"],
+        p_better=comparison["p_better"],
+        clears_promotion_bar=comparison["clears_promotion_bar"],
     )
 
 

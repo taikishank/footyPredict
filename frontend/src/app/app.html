@@ -24,11 +24,23 @@
     >
       Upcoming
     </button>
+    <button
+      type="button"
+      class="rounded-md px-4 py-2 text-sm font-medium"
+      [class.bg-emerald-600]="activeTab() === 'compare'"
+      [class.text-white]="activeTab() === 'compare'"
+      [class.text-slate-400]="activeTab() !== 'compare'"
+      (click)="selectTab('compare')"
+    >
+      Compare
+    </button>
   </nav>
 
   @if (activeTab() === 'live') {
     <app-live-dashboard [initialFixtureId]="handoffFixtureId()" />
-  } @else {
+  } @else if (activeTab() === 'upcoming') {
     <app-upcoming-fixtures (watchLive)="watchOnLiveTab($event)" />
+  } @else {
+    <app-model-comparison />
   }
 </div>

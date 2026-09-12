@@ -1,0 +1,89 @@
+<div class="min-h-screen bg-slate-900 px-6 py-10 text-slate-100">
+  <div class="mx-auto max-w-3xl">
+    <h1 class="text-2xl font-semibold">LiveEdge — Model Comparison</h1>
+    <p class="mt-1 text-sm text-slate-400">
+      Offline validation performance, not live predictions — the challenger isn't served yet, it
+      needs a live lineup feed the project hasn't built. Both models were trained on identical
+      fixtures and split, so the difference below is attributable to the extra features alone.
+    </p>
+
+    @if (comparisonService.status() === 'loading') {
+      <p class="mt-8 text-sm text-slate-500">Loading comparison&hellip;</p>
+    }
+
+    @if (comparisonService.status() === 'not-available') {
+      <p class="mt-8 text-sm text-slate-500">
+        No challenger comparison has been logged yet. Run
+        <code class="text-slate-400">ml/player_stats/train_challenger.py --tier availability</code>
+        to produce one.
+      </p>
+    }
+
+    @if (comparisonService.errorMessage(); as message) {
+      <p class="mt-6 rounded-md bg-rose-950 px-3 py-2 text-sm text-rose-300">{{ message }}</p>
+    }
+
+    @if (comparisonService.comparison(); as cmp) {
+      <div class="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div class="rounded-lg border border-slate-800 bg-slate-950/40 p-5">
+          <div class="text-sm font-medium text-slate-300">{{ cmp.incumbent.label }}</div>
+          <div class="mt-1 text-xs text-slate-500">incumbent — currently serving live</div>
+          <dl class="mt-4 space-y-2 text-sm">
+            <div class="flex justify-between">
+              <dt class="text-slate-500">Log loss</dt>
+              <dd class="text-slate-200">{{ cmp.incumbent.log_loss | number: '1.5-5' }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-slate-500">Brier score</dt>
+              <dd class="text-slate-200">{{ cmp.incumbent.brier | number: '1.5-5' }}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div
+          class="rounded-lg border p-5"
+          [class.border-emerald-700]="cmp.clears_promotion_bar"
+          [class.bg-emerald-950/30]="cmp.clears_promotion_bar"
+          [class.border-slate-800]="!cmp.clears_promotion_bar"
+          [class.bg-slate-950/40]="!cmp.clears_promotion_bar"
+        >
+          <div class="text-sm font-medium text-slate-300">{{ cmp.challenger.label }}</div>
+          <div class="mt-1 text-xs text-slate-500">challenger — offline only, not yet served</div>
+          <dl class="mt-4 space-y-2 text-sm">
+            <div class="flex justify-between">
+              <dt class="text-slate-500">Log loss</dt>
+              <dd class="text-slate-200">{{ cmp.challenger.log_loss | number: '1.5-5' }}</dd>
+            </div>
+            <div class="flex justify-between">
+              <dt class="text-slate-500">Brier score</dt>
+              <dd class="text-slate-200">{{ cmp.challenger.brier | number: '1.5-5' }}</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      <div
+        class="mt-4 rounded-lg border px-5 py-4 text-sm"
+        [class.border-emerald-700]="cmp.clears_promotion_bar"
+        [class.text-emerald-300]="cmp.clears_promotion_bar"
+        [class.border-slate-800]="!cmp.clears_promotion_bar"
+        [class.text-slate-400]="!cmp.clears_promotion_bar"
+      >
+        <div class="font-medium">
+          @if (cmp.clears_promotion_bar) {
+            Challenger clears the promotion bar
+          } @else {
+            Challenger does not clear the promotion bar
+          }
+        </div>
+        <div class="mt-1 text-xs opacity-80">
+          Paired bootstrap log loss reduction: {{ cmp.log_loss_improvement | number: '1.5-5' }}
+          (95% CI [{{ cmp.ci_low | number: '1.5-5' }}, {{ cmp.ci_high | number: '1.5-5' }}]),
+          better on {{ cmp.p_better * 100 | number: '1.0-0' }}% of resamples — validated on
+          {{ cmp.n_val_rows | number: '1.0-0' }} held-out fixtures
+          ({{ cmp.n_train_rows | number: '1.0-0' }} training).
+        </div>
+      </div>
+    }
+  </div>
+</div>

@@ -2,14 +2,15 @@ import { Component, computed, inject, signal } from '@angular/core';
 
 import { LiveDashboardComponent } from './live-prediction/live-dashboard.component';
 import { LivePredictionService } from './live-prediction/live-prediction.service';
+import { ModelComparisonComponent } from './model-comparison/model-comparison.component';
 import { UpcomingFixturesComponent } from './upcoming-fixtures/upcoming-fixtures.component';
 import { UpcomingFixturesService } from './upcoming-fixtures/upcoming-fixtures.service';
 
-type Tab = 'live' | 'upcoming';
+type Tab = 'live' | 'upcoming' | 'compare';
 
 @Component({
   selector: 'app-root',
-  imports: [LiveDashboardComponent, UpcomingFixturesComponent],
+  imports: [LiveDashboardComponent, UpcomingFixturesComponent, ModelComparisonComponent],
   templateUrl: './app.html',
 })
 export class App {
