@@ -58,6 +58,26 @@ def test_get_prediction_returns_probabilities(client, monkeypatch):
     assert body["fixture_id"] == 123
     assert body["home_team"] == "Arsenal"
     assert body["probabilities"] == {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+    assert body["prediction"] == "home_win"
+    assert body["low_confidence"] is False
+
+
+def test_get_prediction_marks_thin_history_low_confidence(client, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "build_match_features",
+        lambda fixture_id: MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), history_matches=1
+        ),
+    )
+    monkeypatch.setattr(
+        model, "predict_proba", lambda vector: {"home_win": 0.2, "draw": 0.3, "away_win": 0.5}
+    )
+
+    body = client.get("/predictions/123").json()
+
+    assert body["prediction"] == "away_win"
+    assert body["low_confidence"] is True
 
 
 def test_get_prediction_404_when_fixture_missing(client, monkeypatch):
@@ -66,9 +86,9 @@ def test_get_prediction_404_when_fixture_missing(client, monkeypatch):
     assert resp.status_code == 404
 
 
-def test_get_prediction_422_when_not_enough_history(client, monkeypatch):
+def test_get_prediction_422_when_team_has_no_history(client, monkeypatch):
     def raise_not_enough(fixture_id):
-        raise NotEnoughHistoryError(team_id=1, n_available=2)
+        raise NotEnoughHistoryError(team_id=1, n_available=0)
 
     monkeypatch.setattr(main, "build_match_features", raise_not_enough)
     resp = client.get("/predictions/123")
@@ -172,7 +192,7 @@ def test_list_upcoming_fixtures(client, monkeypatch):
 
     def _build_match_features(fixture_id):
         if fixture_id == 456:
-            raise NotEnoughHistoryError(team_id=2, n_available=1)
+            raise NotEnoughHistoryError(team_id=2, n_available=0)
         return MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54)))
 
     monkeypatch.setattr(main, "build_match_features", _build_match_features)
@@ -187,11 +207,14 @@ def test_list_upcoming_fixtures(client, monkeypatch):
 
     assert body["window_days"] == 3
     assert [f["fixture_id"] for f in body["fixtures"]] == [123, 456]
+    # No odds match, so no edge - the model still calls the match.
     assert body["fixtures"][0]["probabilities"]["home_win"] == 0.5
+    assert body["fixtures"][0]["prediction"] == "home_win"
     assert body["fixtures"][0]["market"] is None
     assert body["fixtures"][0]["edge"] is None
     assert body["fixtures"][0]["flagged"] is False
     assert body["fixtures"][1]["probabilities"] is None
+    assert body["fixtures"][1]["prediction"] is None
     assert body["fixtures"][1]["model_version"] is None
 
 
@@ -199,7 +222,7 @@ def test_list_upcoming_fixtures_shows_odds_despite_not_enough_history(client, mo
     monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
 
     def _raise_not_enough(fixture_id):
-        raise NotEnoughHistoryError(team_id=1, n_available=2)
+        raise NotEnoughHistoryError(team_id=1, n_available=0)
 
     monkeypatch.setattr(main, "build_match_features", _raise_not_enough)
     monkeypatch.setattr(
@@ -263,6 +286,35 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
         "flagged": True,
         "prices": {"home_win": 2.0, "draw": 3.6, "away_win": 4.5},
     }
+
+
+def test_list_upcoming_fixtures_predicts_when_market_agrees(client, monkeypatch):
+    """A fixture the model has no edge on still gets a prediction - the edge is
+    a separate value signal, not a precondition for calling the match."""
+    monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
+    monkeypatch.setattr(
+        main,
+        "build_match_features",
+        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+    )
+    monkeypatch.setattr(
+        model, "predict_proba", lambda vector: {"home_win": 0.51, "draw": 0.27, "away_win": 0.22}
+    )
+    monkeypatch.setattr(
+        db,
+        "get_odds",
+        lambda fixture_id: {
+            "implied_home": 0.5, "implied_draw": 0.28, "implied_away": 0.22,
+            "home_price": 2.0, "draw_price": 3.6, "away_price": 4.5,
+        },
+    )
+    monkeypatch.setattr(db, "insert_edge", lambda *args, **kwargs: None)
+
+    fx = client.get("/fixtures/upcoming").json()["fixtures"][0]
+
+    assert fx["flagged"] is False
+    assert fx["prediction"] == "home_win"
+    assert fx["probabilities"]["home_win"] == 0.51
 
 
 def test_ws_live_prediction_closes_when_fixture_missing(client, monkeypatch):

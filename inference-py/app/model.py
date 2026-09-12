@@ -52,3 +52,10 @@ def predict_proba(vector: np.ndarray) -> dict[str, float]:
         raise RuntimeError("model not loaded - call load_model() first")
     probs = _model.predict_proba(vector)[0]
     return {label: float(p) for label, p in zip(CLASS_LABELS, probs)}
+
+
+def predicted_outcome(probs: dict[str, float]) -> str:
+    """The outcome the model calls for the match: the most likely of the three.
+    Independent of any market comparison, so every fixture the model can build
+    features for gets one."""
+    return max(CLASS_LABELS, key=lambda label: probs[label])

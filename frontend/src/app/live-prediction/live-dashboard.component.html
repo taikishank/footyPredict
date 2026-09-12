@@ -59,6 +59,16 @@
           </div>
           <div class="text-sm text-slate-400">{{ prediction.state }}</div>
         </div>
+        <div class="mt-2 text-sm">
+          <span class="text-slate-400">Model call:</span>
+          <span class="font-medium text-emerald-300">
+            {{ callLabel(prediction) }}
+            {{ prediction.probabilities[prediction.prediction] * 100 | number: '1.0-0' }}%
+          </span>
+          @if (prediction.low_confidence) {
+            <span class="ml-1 text-xs text-amber-400/80">&middot; thin form</span>
+          }
+        </div>
         <p class="mt-1 text-xs text-slate-500">model {{ prediction.model_version }}</p>
 
         <div class="mt-6">

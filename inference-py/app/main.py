@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import db, model
 from app.config import CORS_ALLOWED_ORIGINS, EDGE_FLAG_THRESHOLD
-from app.features import NotEnoughHistoryError, build_match_features
+from app.features import MatchFeatures, NotEnoughHistoryError, build_match_features
 from app.live_prob import adjust_for_live_state
 from app.schemas import (
     HealthResponse,
@@ -69,7 +69,8 @@ def health() -> HealthResponse:
 
 @app.get("/predictions/{fixture_id}", response_model=PredictionResponse)
 def get_prediction(fixture_id: int) -> PredictionResponse:
-    fixture, probs = _predict_prematch(fixture_id)
+    features, probs = _predict_prematch(fixture_id)
+    fixture = features.fixture
     return PredictionResponse(
         fixture_id=fixture["fixture_id"],
         league_id=fixture["league_id"],
@@ -77,13 +78,15 @@ def get_prediction(fixture_id: int) -> PredictionResponse:
         home_team=fixture["home_name"],
         away_team=fixture["away_name"],
         probabilities=Probabilities(**probs),
+        prediction=model.predicted_outcome(probs),
         model_version=model.model_version(),
+        low_confidence=features.low_confidence,
     )
 
 
 @app.get("/predictions/{fixture_id}/live", response_model=LivePredictionResponse)
 def get_live_prediction(fixture_id: int) -> LivePredictionResponse:
-    fixture, prior = _predict_prematch(fixture_id)
+    features, prior = _predict_prematch(fixture_id)
 
     live_state = db.get_live_state(fixture_id)
     if live_state is None:
@@ -92,15 +95,16 @@ def get_live_prediction(fixture_id: int) -> LivePredictionResponse:
             detail=f"no live state recorded for fixture {fixture_id} - is it in play?",
         )
 
-    return _build_live_response(fixture, prior, live_state)
+    return _build_live_response(features, prior, live_state)
 
 
 @app.get("/fixtures/upcoming", response_model=UpcomingFixturesResponse)
 def list_upcoming_fixtures() -> UpcomingFixturesResponse:
     """Fixtures kicking off within _UPCOMING_WINDOW, each with the model's
-    pre-match prediction where enough history exists, plus market odds and
-    the model-vs-market edge where the odds poller has matched a bookmaker
-    event to the fixture (PROJECT_SPEC.md Phase 4)."""
+    pre-match prediction - made for every fixture it can build features for,
+    not only the ones the market disagrees with - plus market odds and the
+    model-vs-market edge where the odds poller has matched a bookmaker event
+    to the fixture (PROJECT_SPEC.md Phase 4)."""
     now = datetime.now(timezone.utc)
     rows = db.list_upcoming_fixtures(now, now + _UPCOMING_WINDOW)
 
@@ -135,7 +139,9 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
                 home_team=features.fixture["home_name"],
                 away_team=features.fixture["away_name"],
                 probabilities=Probabilities(**model_probs),
+                prediction=model.predicted_outcome(model_probs),
                 model_version=model.model_version(),
+                low_confidence=features.low_confidence,
                 market=market,
                 edge=edge,
                 flagged=flagged,
@@ -152,9 +158,9 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
 
 
 def _fixture_without_prediction(row) -> UpcomingFixture:
-    """Builds an UpcomingFixture with no model prediction (insufficient
-    history, or the feature build failed) but still carries market odds
-    if available."""
+    """Builds an UpcomingFixture with no model prediction (no completed
+    fixtures yet this season for one of the teams, or the feature build
+    failed) but still carries market odds if available."""
     odds_row = db.get_odds(row["fixture_id"])
     market = (
         Probabilities(
@@ -216,7 +222,7 @@ async def stream_live_prediction(websocket: WebSocket, fixture_id: int) -> None:
     await websocket.accept()
 
     try:
-        fixture, prior = _predict_prematch(fixture_id)
+        features, prior = _predict_prematch(fixture_id)
     except HTTPException as exc:
         await websocket.close(code=4004, reason=str(exc.detail))
         return
@@ -226,7 +232,7 @@ async def stream_live_prediction(websocket: WebSocket, fixture_id: int) -> None:
         while True:
             live_state = db.get_live_state(fixture_id)
             if live_state is not None:
-                payload = _build_live_response(fixture, prior, live_state).model_dump(
+                payload = _build_live_response(features, prior, live_state).model_dump(
                     mode="json"
                 )
                 if payload != last_sent:
@@ -238,8 +244,9 @@ async def stream_live_prediction(websocket: WebSocket, fixture_id: int) -> None:
 
 
 def _build_live_response(
-    fixture: db.FixtureRow, prior: dict[str, float], live_state: db.LiveStateRow
+    features: MatchFeatures, prior: dict[str, float], live_state: db.LiveStateRow
 ) -> LivePredictionResponse:
+    fixture = features.fixture
     probs = adjust_for_live_state(
         prior,
         state=live_state["state"],
@@ -253,7 +260,9 @@ def _build_live_response(
         home_team=fixture["home_name"],
         away_team=fixture["away_name"],
         probabilities=Probabilities(**probs),
+        prediction=model.predicted_outcome(probs),
         model_version=model.model_version(),
+        low_confidence=features.low_confidence,
         state=live_state["state"],
         home_goals=live_state["home_goals"],
         away_goals=live_state["away_goals"],
@@ -261,7 +270,7 @@ def _build_live_response(
     )
 
 
-def _predict_prematch(fixture_id: int) -> tuple[db.FixtureRow, dict[str, float]]:
+def _predict_prematch(fixture_id: int) -> tuple[MatchFeatures, dict[str, float]]:
     try:
         features = build_match_features(fixture_id)
     except NotEnoughHistoryError as exc:
@@ -270,7 +279,7 @@ def _predict_prematch(fixture_id: int) -> tuple[db.FixtureRow, dict[str, float]]
     if features is None:
         raise HTTPException(status_code=404, detail=f"fixture {fixture_id} not found")
 
-    return features.fixture, model.predict_proba(features.vector)
+    return features, model.predict_proba(features.vector)
 
 
 if __name__ == "__main__":

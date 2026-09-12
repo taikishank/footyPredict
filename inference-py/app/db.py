@@ -80,10 +80,11 @@ def get_team_history(
     before `before` within the given season, for feeding into
     feature_lib.team_form(). Scoped to `season_id` so history never bleeds
     back into a previous season - a team's form should only reflect the
-    season it's currently playing, so a fresh season starts with no
-    predictions until MIN_WINDOW matches have been played in it, by design.
-    Rows without a final score (e.g. still-unbackfilled upcoming-fixture
-    placeholders) are excluded so MIN_WINDOW only counts usable history."""
+    season it's currently playing, so a fresh season starts unpredictable
+    and stays low-confidence until MIN_WINDOW matches have been played in
+    it, by design. Rows without a final score (e.g. still-unbackfilled
+    upcoming-fixture placeholders) are excluded so only usable history
+    counts."""
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """

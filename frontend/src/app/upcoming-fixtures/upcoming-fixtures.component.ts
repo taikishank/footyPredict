@@ -1,16 +1,9 @@
 import { ChangeDetectionStrategy, Component, OnInit, inject, output } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 
+import { OUTCOME_LABEL } from '../live-prediction/live-prediction.model';
 import { UpcomingFixturesService } from './upcoming-fixtures.service';
-import type { UpcomingFixture } from './upcoming-fixture.model';
-
-type Outcome = 'home_win' | 'draw' | 'away_win';
-
-const OUTCOME_LABEL: Record<Outcome, string> = {
-  home_win: 'Home win',
-  draw: 'Draw',
-  away_win: 'Away win',
-};
+import type { Outcome, UpcomingFixture } from './upcoming-fixture.model';
 
 // Double-chance label for the bet that excludes a given singleton outcome
 // (e.g. excluding away_win leaves home-or-draw, i.e. "1X"). Mirrors
@@ -21,7 +14,12 @@ const DC_LABEL: Record<Outcome, string> = {
   draw: '12',
 };
 
-export interface ModelPick {
+export interface MatchPrediction {
+  label: string;
+  probability: number;
+}
+
+export interface EdgeCall {
   label: string;
   modelProb: number;
   marketProb: number;
@@ -49,11 +47,23 @@ export class UpcomingFixturesComponent implements OnInit {
     this.watchLive.emit(fixtureId);
   }
 
-  // The side the model is calling for a flagged fixture: whichever outcome
-  // has the largest edge magnitude. Mirrors backtest/grade_calls.py's
-  // call_side selection so "the model's pick" here means the same thing it
-  // means once the call gets graded against the actual result.
-  protected modelPick(fx: UpcomingFixture): ModelPick | null {
+  // The model's outright call on the match - the outcome it rates most likely.
+  // Present for every fixture it could build features for, independent of what
+  // the market thinks, so the list always shows a prediction.
+  protected prediction(fx: UpcomingFixture): MatchPrediction | null {
+    if (fx.prediction === null || !fx.probabilities) return null;
+
+    return {
+      label: OUTCOME_LABEL[fx.prediction],
+      probability: fx.probabilities[fx.prediction],
+    };
+  }
+
+  // The betting call on a flagged fixture: whichever outcome diverges most from
+  // the market. Mirrors backtest/grade_calls.py's call_side selection so the
+  // value call shown here means the same thing it means once graded against the
+  // actual result. Distinct from prediction() above - this one needs odds.
+  protected edgeCall(fx: UpcomingFixture): EdgeCall | null {
     const side = this.callSide(fx);
     if (side === null) return null;
 
@@ -66,10 +76,10 @@ export class UpcomingFixturesComponent implements OnInit {
   }
 
   // The same call reframed as a double-chance bet: the pair of outcomes
-  // excluding whichever side modelPick() called. Derived from the same
+  // excluding whichever side edgeCall() called. Derived from the same
   // probabilities/market/edge already on the fixture - mirrors
   // backtest/grade_calls.py's double_chance_calls derivation.
-  protected modelPickDoubleChance(fx: UpcomingFixture): ModelPick | null {
+  protected edgeCallDoubleChance(fx: UpcomingFixture): EdgeCall | null {
     const side = this.callSide(fx);
     if (side === null) return null;
 

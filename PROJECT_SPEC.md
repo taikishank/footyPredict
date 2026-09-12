@@ -90,9 +90,13 @@ A full-stack, cloud-deployed system that:
 - Store edges in Postgres; flag threshold-exceeding edges
 - **Upcoming Fixtures tab (dashboard):** lists fixtures kicking off within the
   next ~3 days, sourced from the Odds API fetch above (fixture list + current
-  odds/implied probability per fixture). Model makaes pre-match predictions
-  if it satisfies the window constraint for the model. Feeds fixture IDs a 
-  user can hand off to the Live tab once a match goes live.
+  odds/implied probability per fixture). The model calls every listed fixture
+  it can build form features for — a flagged edge highlights a fixture worth
+  betting into, it is not a precondition for predicting it. Fixtures where a
+  team has played fewer matches this season than the training window are
+  predicted and marked low-confidence; only a team with no completed fixtures
+  at all goes unpredicted. Feeds fixture IDs a user can hand off to the Live
+  tab once a match goes live.
 
 ### Phase 5 — Claude API Context Synthesis
 - Lambda calls Claude API with web search tool enabled

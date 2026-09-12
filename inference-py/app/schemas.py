@@ -1,6 +1,9 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+Outcome = Literal["home_win", "draw", "away_win"]
 
 
 class Probabilities(BaseModel):
@@ -16,7 +19,13 @@ class PredictionResponse(BaseModel):
     home_team: str
     away_team: str
     probabilities: Probabilities
+    # The outcome the model calls: whichever of the three it rates most likely.
+    prediction: Outcome
     model_version: str
+    # True when at least one team has fewer than feature_lib.MIN_WINDOW prior
+    # fixtures this season, so the form averages behind the prediction are
+    # thinner than the model was trained on.
+    low_confidence: bool = False
 
 
 class LivePredictionResponse(PredictionResponse):
@@ -32,16 +41,21 @@ class UpcomingFixture(BaseModel):
     starting_at: datetime
     home_team: str
     away_team: str
-    # None when the team(s) don't have enough history yet for a prediction
-    # (NotEnoughHistoryError).
+    # The model predicts every fixture it can build features for, regardless of
+    # whether the market disagrees. Both are None only when no team has played
+    # yet this season, or the feature build failed (NotEnoughHistoryError).
     probabilities: Probabilities | None
+    prediction: Outcome | None = None
     model_version: str | None
+    low_confidence: bool = False
     # market is None when the odds poller hasn't matched this fixture to a
     # bookmaker event yet. edge is additionally None when probabilities is
     # None, since it requires a model prediction to compare against
     # (PROJECT_SPEC.md Phase 4).
     market: Probabilities | None = None
     edge: Probabilities | None = None
+    # A significant model-vs-market divergence worth betting into - a value
+    # signal layered on top of the prediction, not a precondition for it.
     flagged: bool = False
 
 

@@ -2,8 +2,9 @@
   <div class="mx-auto max-w-3xl">
     <h1 class="text-2xl font-semibold">LiveEdge — Upcoming Fixtures</h1>
     <p class="mt-1 text-sm text-slate-400">
-      Fixtures kicking off in the next few days, with the model's pre-match win probability
-      alongside the bookmaker-implied market probability and the edge between them.
+      Fixtures kicking off in the next few days. The model calls every match it has form data
+      for, shown alongside the bookmaker-implied market probability and the edge between them;
+      matches where that edge is large enough to bet into are highlighted.
     </p>
 
     @if (fixturesService.status() === 'loading') {
@@ -36,15 +37,30 @@
 
             <div class="text-right text-sm">
               @if (fx.probabilities; as probs) {
-                <div class="text-slate-300">
+                @if (prediction(fx); as pick) {
+                  <div class="font-medium text-emerald-300">
+                    {{ pick.label }} {{ pick.probability * 100 | number: '1.0-0' }}%
+                  </div>
+                }
+                <div class="text-xs text-slate-400">
                   H {{ probs.home_win * 100 | number: '1.0-0' }}% &middot;
                   D {{ probs.draw * 100 | number: '1.0-0' }}% &middot;
                   A {{ probs.away_win * 100 | number: '1.0-0' }}%
                 </div>
+                <div class="mt-0.5 text-xs text-slate-600">
+                  model prediction
+                  @if (fx.low_confidence) {
+                    <span class="text-amber-400/80" title="One or both teams have played fewer than 3 matches this season">
+                      &middot; thin form
+                    </span>
+                  }
+                </div>
               } @else {
-                <div class="text-slate-500">insufficient history</div>
+                <div class="text-slate-500">no form data yet</div>
+                <div class="mt-0.5 text-xs text-slate-600">
+                  awaiting this season's results
+                </div>
               }
-              <div class="mt-0.5 text-xs text-slate-600">model</div>
             </div>
 
             <div class="text-right text-sm">
@@ -61,15 +77,15 @@
                     A {{ edge.away_win * 100 | number: '1.0-0' }}pp
                   </div>
                 }
-                @if (modelPick(fx); as pick) {
+                @if (edgeCall(fx); as pick) {
                   <div class="mt-1 text-xs font-medium text-amber-300">
-                    Model's pick: {{ pick.label }}
+                    Value edge: {{ pick.label }}
                     ({{ pick.modelProb * 100 | number: '1.0-0' }}% vs market
                     {{ pick.marketProb * 100 | number: '1.0-0' }}%, edge
                     {{ pick.edge * 100 | number: '1.0-0' }}pp)
                   </div>
                 }
-                @if (modelPickDoubleChance(fx); as dcPick) {
+                @if (edgeCallDoubleChance(fx); as dcPick) {
                   <div class="mt-0.5 text-xs text-amber-300/70">
                     Double chance: {{ dcPick.label }}
                     ({{ dcPick.modelProb * 100 | number: '1.0-0' }}% vs market

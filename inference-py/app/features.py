@@ -11,20 +11,28 @@ from feature_lib import FORM_FIELD_ORDER, MAX_WINDOW, MIN_WINDOW, team_form
 
 
 class NotEnoughHistoryError(Exception):
-    """Raised when a team has fewer than MIN_WINDOW prior fixtures in the DB."""
+    """Raised when a team has no prior fixtures in the DB this season, leaving
+    nothing to average into a form vector. A short history is not an error -
+    see MatchFeatures.low_confidence."""
 
     def __init__(self, team_id: int, n_available: int):
         self.team_id = team_id
         self.n_available = n_available
-        super().__init__(
-            f"team {team_id} has only {n_available} prior fixtures (need >= {MIN_WINDOW})"
-        )
+        super().__init__(f"team {team_id} has no prior fixtures this season")
 
 
 @dataclass
 class MatchFeatures:
     fixture: FixtureRow
     vector: np.ndarray  # shape (1, 2 * len(FORM_FIELD_ORDER)), column order matches training
+    # Fewest prior fixtures either team has this season. Below MIN_WINDOW the
+    # form averages are noisier than anything the model saw during training,
+    # so the prediction still stands but is marked low confidence.
+    history_matches: int = MAX_WINDOW
+
+    @property
+    def low_confidence(self) -> bool:
+        return self.history_matches < MIN_WINDOW
 
 
 def build_match_features(fixture_id: int) -> MatchFeatures | None:
@@ -36,14 +44,14 @@ def build_match_features(fixture_id: int) -> MatchFeatures | None:
     home_history = get_team_history(
         fixture["home_id"], fixture["starting_at"], MAX_WINDOW, season_id
     )
-    if len(home_history) < MIN_WINDOW:
-        raise NotEnoughHistoryError(fixture["home_id"], len(home_history))
+    if not home_history:
+        raise NotEnoughHistoryError(fixture["home_id"], 0)
 
     away_history = get_team_history(
         fixture["away_id"], fixture["starting_at"], MAX_WINDOW, season_id
     )
-    if len(away_history) < MIN_WINDOW:
-        raise NotEnoughHistoryError(fixture["away_id"], len(away_history))
+    if not away_history:
+        raise NotEnoughHistoryError(fixture["away_id"], 0)
 
     home_form = team_form(home_history)
     away_form = team_form(away_history)
@@ -51,4 +59,8 @@ def build_match_features(fixture_id: int) -> MatchFeatures | None:
     row = [home_form[name] for name in FORM_FIELD_ORDER] + [
         away_form[name] for name in FORM_FIELD_ORDER
     ]
-    return MatchFeatures(fixture=fixture, vector=np.array([row], dtype=float))
+    return MatchFeatures(
+        fixture=fixture,
+        vector=np.array([row], dtype=float),
+        history_matches=min(len(home_history), len(away_history)),
+    )

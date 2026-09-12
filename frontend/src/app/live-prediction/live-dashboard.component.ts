@@ -1,13 +1,15 @@
 import { ChangeDetectionStrategy, Component, effect, inject, input, signal } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 
 import { LivePredictionService } from './live-prediction.service';
+import { OUTCOME_LABEL, type LivePrediction } from './live-prediction.model';
 import { WinProbabilityChartComponent } from './win-probability-chart.component';
 
 @Component({
   selector: 'app-live-dashboard',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, WinProbabilityChartComponent],
+  imports: [DecimalPipe, FormsModule, WinProbabilityChartComponent],
   templateUrl: './live-dashboard.component.html',
 })
 export class LiveDashboardComponent {
@@ -36,5 +38,9 @@ export class LiveDashboardComponent {
 
   protected stop(): void {
     this.live.disconnect();
+  }
+
+  protected callLabel(prediction: LivePrediction): string {
+    return OUTCOME_LABEL[prediction.prediction];
   }
 }

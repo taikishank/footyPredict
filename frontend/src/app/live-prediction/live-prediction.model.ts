@@ -6,6 +6,15 @@ export interface Probabilities {
   away_win: number;
 }
 
+export type Outcome = keyof Probabilities;
+
+// Display names for the three outcomes, shared by the Upcoming and Live views.
+export const OUTCOME_LABEL: Record<Outcome, string> = {
+  home_win: 'Home win',
+  draw: 'Draw',
+  away_win: 'Away win',
+};
+
 export interface LivePrediction {
   fixture_id: number;
   league_id: number;
@@ -13,7 +22,11 @@ export interface LivePrediction {
   home_team: string;
   away_team: string;
   probabilities: Probabilities;
+  // The outcome the model currently calls, i.e. the most likely of the three
+  // once the live score is folded in.
+  prediction: Outcome;
   model_version: string;
+  low_confidence: boolean;
   state: string;
   home_goals: number;
   away_goals: number;
