@@ -3,7 +3,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from feature_lib import MIN_WINDOW, extract_team_stats, team_form
+from feature_lib import (
+    GOALS_WINDOW,
+    MIN_WINDOW,
+    LeagueRollingMean,
+    club_goals_relative,
+    extract_team_stats,
+    team_form,
+)
 
 RAW_DIR = Path(__file__).parent / "data" / "raw"
 FEATURES_DIR = Path(__file__).parent / "data" / "features"
@@ -75,9 +82,18 @@ def load_fixtures() -> list[dict]:
     return fixtures
 
 
+def _goal_volume(history: list[dict]) -> float:
+    return sum(h["goals_for"] for h in history[-GOALS_WINDOW:])
+
+
 def build_feature_table() -> pd.DataFrame:
     fixtures = load_fixtures()
     team_history: dict[int, list[dict]] = {}
+    # Not season-scoped, unlike team_form()'s short window: GOALS_WINDOW=38 is
+    # close to a full season on purpose (ml/player_stats/FINDINGS_PHASE9.md),
+    # so it's expected to span a season boundary early in a new one rather
+    # than reset to nothing.
+    league_goal_volume = LeagueRollingMean()
     rows = []
 
     for fx in fixtures:
@@ -96,6 +112,14 @@ def build_feature_table() -> pd.DataFrame:
                 row[f"home_form_{name}"] = value
             for name, value in team_form(away_hist).items():
                 row[f"away_form_{name}"] = value
+
+            league_ref = league_goal_volume.reference(fx["league_id"])
+            row["home_club_goals_relative"] = club_goals_relative(
+                _goal_volume(home_hist), league_ref
+            )
+            row["away_club_goals_relative"] = club_goals_relative(
+                _goal_volume(away_hist), league_ref
+            )
             rows.append(row)
 
         team_history.setdefault(fx["home_id"], []).append(
@@ -104,6 +128,13 @@ def build_feature_table() -> pd.DataFrame:
         team_history.setdefault(fx["away_id"], []).append(
             {"goals_for": fx["away_goals"], "goals_against": fx["home_goals"], "stats": fx["away_stats"]}
         )
+
+        # The league reference sees each club's *updated* (post-match) goal
+        # volume - it's a level to compare against, not a prediction, and this
+        # fixture's own row (if any) was already emitted above using the
+        # pre-match reference.
+        league_goal_volume.update(fx["league_id"], _goal_volume(team_history[fx["home_id"]]))
+        league_goal_volume.update(fx["league_id"], _goal_volume(team_history[fx["away_id"]]))
 
     return pd.DataFrame(rows)
 

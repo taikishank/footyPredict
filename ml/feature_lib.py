@@ -6,6 +6,51 @@
 MIN_WINDOW = 3
 MAX_WINDOW = 8
 
+# A club's goals scored over its last GOALS_WINDOW matches, normalised by its
+# league's recent level (club_goals_relative below) - the single largest
+# squad-stats finding outside the availability block in
+# ml/player_stats/FINDINGS_PHASE9.md (+0.0035 log loss), and the one that
+# needs no lineup data at all, only goals per club per match. Ported here
+# (rather than depended on from ml/player_stats/player_feature_lib.py) since
+# this is the shared team-form/inference module and the player-stats work is
+# a separate, still-offline experiment track.
+GOALS_WINDOW = 38
+
+
+class LeagueRollingMean:
+    """A league's recent mean of some per-club quantity, as of now.
+
+    Goals scored over GOALS_WINDOW matches inherits the archive's density
+    ramp (more leagues/seasons covered as the years go on) the same way raw
+    career-appearance counts did in ml/player_stats/FINDINGS_PHASE9.md -
+    dividing by a rolling reference turns a count into "how does this club's
+    scoring compare with the league it's actually in right now", which has no
+    time trend. Rolling rather than expanding so it tracks the ramp instead
+    of lagging behind it.
+    """
+
+    WINDOW = 200
+
+    def __init__(self) -> None:
+        self._recent: dict[int, list[float]] = {}
+
+    def update(self, league_id: int, value: float) -> None:
+        recent = self._recent.setdefault(league_id, [])
+        recent.append(value)
+        if len(recent) > self.WINDOW:
+            del recent[: -self.WINDOW]
+
+    def reference(self, league_id: int) -> float | None:
+        recent = self._recent.get(league_id)
+        return sum(recent) / len(recent) if recent else None
+
+
+def club_goals_relative(volume: float, league_reference: float | None) -> float | None:
+    """A club's GOALS_WINDOW-match goal volume against its league's recent
+    level, or None before a reference exists (a league's very first
+    fixtures)."""
+    return volume / league_reference if league_reference else None
+
 # type_id -> feature name
 STAT_IDS = {
     42: "shots_total",
