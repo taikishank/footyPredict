@@ -102,7 +102,7 @@ A full-stack, cloud-deployed system that:
 
 ### Phase 6 — Backtesting & Calibration
 - Historical edges vs. actual outcomes stored in Postgres
-- Backtest module computes: hit rate on flagged edges, calibration plot, ROI simulation (paper only)
+- Backtest module grades every pre-kickoff prediction and computes: hit rate, calibration plot, ROI simulation (paper only), each broken out for flagged edges vs. the unflagged control group
 - Render as a report page in the dashboard
 
 ### Phase 7 — Polish for Resume/Demo

@@ -1,14 +1,20 @@
-"""Grades finished fixtures against the model's flagged edge calls.
+"""Grades finished fixtures against the model's pre-kickoff predictions.
 
 For each fixture whose result is now known and that doesn't yet have a
-prediction_calls row, picks the flagged `edges` snapshot closest to kickoff
-as "the call" (edges is an append-only poll-by-poll log, so a fixture can
-flip in and out of flagged as odds move before kickoff), compares it to what
-actually happened, and records a graded row: whether the edge side won, the
-Brier score of the full model (and market) distribution, and a flat-stake
-paper P&L against the price recorded at that snapshot. Fixtures the model
-never flagged an edge on are left ungraded entirely - see PROJECT_SPEC.md
-Phase 6.
+prediction_calls row, picks the `edges` snapshot closest to kickoff as "the
+call", compares it to what actually happened, and records a graded row:
+whether the called side won, the Brier score of the full model (and market)
+distribution, and a flat-stake paper P&L against the price recorded at that
+snapshot.
+
+Every fixture the model priced is graded, not only the ones it flagged an
+edge on - grading a self-selected slice can't tell you whether the model is
+calibrated in general. The flagged ones stay distinguishable: each row
+records `flagged` (was the graded snapshot itself flagged) and
+`ever_flagged` (was ANY pre-kickoff snapshot flagged, since edges is an
+append-only poll-by-poll log and a fixture can flip in and out of flagged as
+odds move). backtest/report.py breaks the summary out along that split - see
+PROJECT_SPEC.md Phase 6.
 
 Run manually or on a schedule (cron); safe to re-run since already-graded
 fixtures are excluded by the ungraded-fixtures query and the insert's
@@ -66,20 +72,20 @@ def find_ungraded_finished_fixtures(conn: psycopg.Connection) -> list[int]:
         return [row[0] for row in cur.fetchall()]
 
 
-def latest_flagged_edge(
+def latest_edge(
     conn: psycopg.Connection, fixture_id: int, starting_at
 ) -> dict | None:
-    """The flagged snapshot closest to kickoff - the last thing the model
-    believed before the match was no longer "upcoming"."""
+    """The snapshot closest to kickoff - the last thing the model believed
+    before the match was no longer "upcoming" - flagged or not."""
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT computed_at, model_home, model_draw, model_away,
                    market_home, market_draw, market_away,
                    edge_home, edge_draw, edge_away,
-                   home_price, draw_price, away_price
+                   home_price, draw_price, away_price, flagged
             FROM edges
-            WHERE fixture_id = %s AND flagged = true AND computed_at < %s
+            WHERE fixture_id = %s AND computed_at < %s
             ORDER BY computed_at DESC
             LIMIT 1
             """,
@@ -92,9 +98,25 @@ def latest_flagged_edge(
             "computed_at", "model_home", "model_draw", "model_away",
             "market_home", "market_draw", "market_away",
             "edge_home", "edge_draw", "edge_away",
-            "home_price", "draw_price", "away_price",
+            "home_price", "draw_price", "away_price", "flagged",
         )
         return dict(zip(keys, row))
+
+
+def ever_flagged(conn: psycopg.Connection, fixture_id: int, starting_at) -> bool:
+    """Whether the model flagged an edge at any point before kickoff, even if
+    the snapshot it settled on by kickoff no longer was."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM edges
+                WHERE fixture_id = %s AND computed_at < %s AND flagged = true
+            )
+            """,
+            (fixture_id, starting_at),
+        )
+        return bool(cur.fetchone()[0])
 
 
 def _brier_score(probs_by_outcome: dict[str, float], actual_result: str) -> float:
@@ -105,8 +127,8 @@ def _brier_score(probs_by_outcome: dict[str, float], actual_result: str) -> floa
 
 
 def grade_fixture(conn: psycopg.Connection, fixture_id: int) -> bool:
-    """Grades one fixture's call, if it ever had a flagged edge. Returns
-    True if a prediction_calls row was written."""
+    """Grades one fixture's call, if the model ever priced it before
+    kickoff. Returns True if a prediction_calls row was written."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT starting_at, result FROM fixtures WHERE fixture_id = %s",
@@ -114,9 +136,12 @@ def grade_fixture(conn: psycopg.Connection, fixture_id: int) -> bool:
         )
         starting_at, actual_result = cur.fetchone()
 
-    call = latest_flagged_edge(conn, fixture_id, starting_at)
+    call = latest_edge(conn, fixture_id, starting_at)
     if call is None:
-        return False  # model never flagged an edge on this fixture
+        return False  # model never priced this fixture before kickoff
+
+    was_flagged = bool(call["flagged"])
+    was_ever_flagged = was_flagged or ever_flagged(conn, fixture_id, starting_at)
 
     call_side = max(_OUTCOMES, key=lambda o: abs(float(call[_EDGE_COL[o]])))
     model_prob = float(call[_MODEL_COL[call_side]])
@@ -143,14 +168,14 @@ def grade_fixture(conn: psycopg.Connection, fixture_id: int) -> bool:
             INSERT INTO prediction_calls (
                 fixture_id, edge_computed_at, call_side, model_prob, market_prob,
                 edge, price, actual_result, correct, brier_score, market_brier_score,
-                staked_units, pnl_units
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                staked_units, pnl_units, flagged, ever_flagged
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (fixture_id) DO NOTHING
             """,
             (
                 fixture_id, call["computed_at"], call_side, model_prob, market_prob,
                 edge, price, actual_result, correct, brier_score, market_brier_score,
-                staked_units, pnl_units,
+                staked_units, pnl_units, was_flagged, was_ever_flagged,
             ),
         )
 
@@ -172,14 +197,15 @@ def grade_fixture(conn: psycopg.Connection, fixture_id: int) -> bool:
             INSERT INTO double_chance_calls (
                 fixture_id, edge_computed_at, dc_label, excludes_outcome, model_prob,
                 market_prob, edge, implied_price, actual_result, correct, brier_score,
-                market_brier_score, staked_units, pnl_units
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                market_brier_score, staked_units, pnl_units, flagged, ever_flagged
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (fixture_id) DO NOTHING
             """,
             (
                 fixture_id, call["computed_at"], dc_label, call_side, dc_model_prob,
                 dc_market_prob, dc_edge, dc_price, actual_result, dc_correct,
                 dc_brier_score, dc_market_brier_score, staked_units, dc_pnl_units,
+                was_flagged, was_ever_flagged,
             ),
         )
     return True
@@ -196,7 +222,8 @@ def main() -> None:
                 skipped += 1
         conn.commit()
     print(
-        f"graded {graded} call(s); {skipped} finished fixture(s) had no flagged edge",
+        f"graded {graded} prediction(s); "
+        f"{skipped} finished fixture(s) had no pre-kickoff edges snapshot",
         file=sys.stderr,
     )
 

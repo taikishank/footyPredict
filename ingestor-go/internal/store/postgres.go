@@ -90,10 +90,10 @@ ALTER TABLE edges ADD COLUMN IF NOT EXISTS draw_price NUMERIC;
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS away_price NUMERIC;
 
 -- prediction_calls is the graded scorecard: one row per fixture the model
--- ever flagged an edge on, selecting the flagged edges snapshot closest to
--- kickoff as "the call" (see backtest/grade_calls.py) and recording what
--- actually happened. edges stays a pure append-only log; this is derived
--- from it once a fixture's result is known.
+-- ever priced, selecting the edges snapshot closest to kickoff as "the call"
+-- (see backtest/grade_calls.py) and recording what actually happened. edges
+-- stays a pure append-only log; this is derived from it once a fixture's
+-- result is known.
 CREATE TABLE IF NOT EXISTS prediction_calls (
 	fixture_id      BIGINT PRIMARY KEY REFERENCES fixtures(fixture_id),
 	edge_computed_at TIMESTAMPTZ NOT NULL,
@@ -111,6 +111,16 @@ CREATE TABLE IF NOT EXISTS prediction_calls (
 	graded_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
 	FOREIGN KEY (fixture_id, edge_computed_at) REFERENCES edges (fixture_id, computed_at)
 );
+
+-- Every priced fixture is graded, not just the ones the model flagged an
+-- edge on, so calibration is measured on the whole book rather than on a
+-- self-selected slice. flagged is the state of the graded snapshot itself;
+-- ever_flagged is true if ANY pre-kickoff snapshot was flagged, since a
+-- fixture can flip in and out of flagged as odds move. Added after the
+-- flagged-only grading shipped, hence ALTER; DEFAULT true is correct for
+-- the pre-existing rows, which were all flagged calls by construction.
+ALTER TABLE prediction_calls ADD COLUMN IF NOT EXISTS flagged BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE prediction_calls ADD COLUMN IF NOT EXISTS ever_flagged BOOLEAN NOT NULL DEFAULT true;
 
 -- double_chance_calls is prediction_calls' binary-market sibling: for the
 -- same flagged edge snapshot, grades the double-chance bet that excludes
@@ -136,6 +146,10 @@ CREATE TABLE IF NOT EXISTS double_chance_calls (
 	graded_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
 	FOREIGN KEY (fixture_id, edge_computed_at) REFERENCES edges (fixture_id, computed_at)
 );
+
+-- Same flagged/ever_flagged split as prediction_calls, for the same reason.
+ALTER TABLE double_chance_calls ADD COLUMN IF NOT EXISTS flagged BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE double_chance_calls ADD COLUMN IF NOT EXISTS ever_flagged BOOLEAN NOT NULL DEFAULT true;
 `
 
 type Store struct {
