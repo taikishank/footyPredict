@@ -11,6 +11,9 @@ Reproduce with:
 ./inference-py/bin/python ml/player_stats/build_player_features.py   # ~3 min
 ./inference-py/bin/python ml/player_stats/train_challenger.py --tier availability
 ./inference-py/bin/python ml/player_stats/train_challenger.py --tier performance
+./inference-py/bin/python ml/player_stats/ablate.py blocks   --tier performance
+./inference-py/bin/python ml/player_stats/ablate.py features --tier availability
+./inference-py/bin/python ml/player_stats/ablate.py trim     --tier performance
 ```
 
 Nothing here touches `ml/feature_lib.py`, `ml/build_features.py` or `ml/train.py`.
@@ -95,6 +98,73 @@ scorer missing. Worth revisiting before Phase 10 builds serving on top of it.
 
 ---
 
+## The performance block is weak, not redundant, and trimming does not fix it
+
+The nested comparison above shows the performance block adding nothing *on top
+of* availability, which has two very different explanations: the ratings could
+be carrying the same information the minutes features already carry, or they
+could be carrying almost nothing. Running the block on its own separates them
+(`ablate.py blocks`, 2016+, 3,601 validation fixtures):
+
+| arm | columns | log loss | vs. form only |
+|---|---|---|---|
+| form only | 54 | 1.00334 | — |
+| form + availability | 68 | 0.99643 | **+0.00690**, clears |
+| form + performance | 90 | 1.00221 | +0.00113, noise |
+| form + both | 104 | 0.99594 | +0.00740, clears |
+
+**Weak, not redundant.** Without the availability block to lean on, 36 rating
+features buy +0.00113 over bare team form — six times less than 14 minutes
+features buy, and well inside noise. Adding availability *to* performance still
+clears (+0.00627), so the direction of redundancy is one-way.
+
+### Was it simply too many columns for 14,403 training rows?
+
+A fair worry, and the reason `ablate.py trim` exists: rank the performance
+features by importance from the train-fit model, keep the top k home/away
+pairs, and re-test.
+
+| top-k | columns | log loss | vs. form + availability |
+|---|---|---|---|
+| 1 (`top3_rating`) | 70 | 0.99487 | +0.00157, CI [−0.00093, +0.00408] |
+| 4 | 76 | 0.99554 | +0.00089, CI [−0.00231, +0.00412] |
+| 8 | 84 | 0.99398 | +0.00246, CI [−0.00136, +0.00614] |
+| 18 (all) | 104 | 0.99578 | +0.00065, CI [−0.00398, +0.00513] |
+
+**No k clears.** The best raw log loss (k = 8) is also the best of eight tries
+on one validation set, which makes it the least trustworthy number in the
+table, and its interval still spans zero. Column count is not the lever in
+either direction.
+
+### Stage 1 did not capture everything, and that is not the problem either
+
+For the record, since the opposite question is the natural one to ask: stage 1
+captures **18 of the 74 stat types** present in the dense era. Widely-available
+types left out include Passes, Accurate Passes, Total/Accurate Crosses, Total
+Duels, Aerials Won, Fouls, Fouls Drawn, Dispossessed, Offsides, Big Chances
+Missed and Captain — all on ~85-91% of 2016+ fixtures. Adding them is one
+re-run of stage 1 away, because Phase 8 deliberately cached every type.
+
+But the evidence above says more raw stat types is the wrong direction. What is
+failing is not the breadth of the input, it is that a per-position mean of
+rolling per-90 rates does not distinguish two XIs the way team form already
+does. `top3_rating` ranks first among the performance features and is the only
+one that ranks near the availability features at all, which hints the useful
+signal is in the *distribution* of quality across an XI rather than its
+average.
+
+### What this split can and cannot see
+
+Every "noise" verdict here has a floor: the 2016+ validation set is 3,601
+fixtures and the paired bootstrap's interval half-width is ~0.0045. So the
+honest statement is not "the performance block does nothing" but **"any effect
+it has is smaller than ~0.005 log loss"** — an order of magnitude below the
++0.0069 the availability block delivers on the same rows. Distinguishing a
+genuinely-zero effect from a small one would need either more history (which
+the 2015/16 provider cliff forecloses) or a much larger validation set.
+
+---
+
 ## Design decisions taken
 
 **Two stages, two artifacts.** `build_player_table.py` flattens all 41,777
@@ -168,9 +238,11 @@ was real and only its parameterisation was leaking.
    (see above). This is the single most likely reason §1's central claim is not
    showing up in the numbers.
 2. **The performance tier should not be carried forward as-is.** It costs the
-   2016 cutoff, halves the training set, and buys nothing. Either drop it, or
-   find an aggregation that beats `top3_rating` — which is the only performance
-   feature that ranks anywhere in the importance list.
+   2016 cutoff, halves the training set, and buys nothing — and the section
+   above rules out both column count and missing stat types as the cause. If it
+   is revisited, the thing to change is the *aggregation*, not the input:
+   `top3_rating` outranks every other performance feature, which points at the
+   distribution of quality across an XI rather than its per-position mean.
 3. **The train/serve gap is still unmeasured.** The cache holds only ~40
    fixtures with a predicted XI (874 rows), far too few to estimate how much
    accuracy is lost when the XI is guessed rather than confirmed. Phase 10's
