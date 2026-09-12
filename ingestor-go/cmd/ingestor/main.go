@@ -82,9 +82,14 @@ func main() {
 		defer wg.Done()
 		liveSvc.Run(ctx, cfg.LivePollInterval)
 	}()
+	// Seed the fixtures table before the odds poller's first cycle can read
+	// it - otherwise the odds poller races upcomingSvc's initial pull and
+	// logs spurious "no fixture match" for fixtures that hadn't been
+	// written yet, permanently missing that odds cycle.
+	upcomingSvc.RunCycle(ctx)
 	go func() {
 		defer wg.Done()
-		upcomingSvc.Run(ctx, cfg.UpcomingPollInterval)
+		upcomingSvc.Loop(ctx, cfg.UpcomingPollInterval)
 	}()
 
 	if cfg.OddsAPIKey == "" {
