@@ -111,6 +111,31 @@ CREATE TABLE IF NOT EXISTS prediction_calls (
 	graded_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
 	FOREIGN KEY (fixture_id, edge_computed_at) REFERENCES edges (fixture_id, computed_at)
 );
+
+-- double_chance_calls is prediction_calls' binary-market sibling: for the
+-- same flagged edge snapshot, grades the double-chance bet that excludes
+-- whichever outcome prediction_calls.call_side names (e.g. call_side
+-- 'away_win' -> dc_label '1X', home-or-draw). Derived entirely from the
+-- same snapshot/actual result, so it needs no new odds data - see
+-- backtest/grade_calls.py.
+CREATE TABLE IF NOT EXISTS double_chance_calls (
+	fixture_id       BIGINT PRIMARY KEY REFERENCES fixtures(fixture_id),
+	edge_computed_at TIMESTAMPTZ NOT NULL,
+	dc_label         TEXT NOT NULL CHECK (dc_label IN ('1X', 'X2', '12')),
+	excludes_outcome TEXT NOT NULL CHECK (excludes_outcome IN ('home_win', 'draw', 'away_win')),
+	model_prob       NUMERIC NOT NULL,
+	market_prob      NUMERIC NOT NULL,
+	edge             NUMERIC NOT NULL,
+	implied_price    NUMERIC,
+	actual_result    TEXT NOT NULL CHECK (actual_result IN ('home_win', 'draw', 'away_win')),
+	correct          BOOLEAN NOT NULL,
+	brier_score      NUMERIC NOT NULL,
+	market_brier_score NUMERIC NOT NULL,
+	staked_units     NUMERIC NOT NULL DEFAULT 1,
+	pnl_units        NUMERIC,
+	graded_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+	FOREIGN KEY (fixture_id, edge_computed_at) REFERENCES edges (fixture_id, computed_at)
+);
 `
 
 type Store struct {
