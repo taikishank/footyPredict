@@ -24,6 +24,15 @@ const DC_LABEL: Record<Outcome, string> = {
   draw: '12',
 };
 
+// Plain-language gloss for the same excluded-outcome keying as DC_LABEL, so
+// the UI can spell out which two outcomes the double-chance % actually
+// covers instead of relying on the 1X/X2/12 shorthand alone.
+const DC_DESCRIPTION: Record<Outcome, string> = {
+  away_win: 'home win or draw',
+  home_win: 'draw or away win',
+  draw: 'home or away win (no draw)',
+};
+
 export type ConfidenceLevel = 'low' | 'medium' | 'high';
 
 export interface Confidence {
@@ -48,6 +57,10 @@ export interface ModelPick {
   // the pick is shown at all.
   flagged: boolean;
   confidence: Confidence;
+  // Plain-language gloss of which outcomes the % covers, e.g. "home win or
+  // draw". Only set for the double-chance pick - the singleton pick's label
+  // is already self-explanatory.
+  description: string | null;
 }
 
 // Score thresholds for bucketing a continuous confidence score into a label.
@@ -133,6 +146,7 @@ export class UpcomingFixturesComponent implements OnInit {
     // model would still assign it 2/3; a singleton call's baseline is 1/3.
     const baseline = doubleChance ? 2 / 3 : 1 / 3;
     const confidence = this.confidenceFor(modelProb, baseline);
+    const description = doubleChance ? DC_DESCRIPTION[side] : null;
 
     if (market === null) {
       return {
@@ -141,6 +155,7 @@ export class UpcomingFixturesComponent implements OnInit {
         vsMarket: null,
         flagged: false,
         confidence,
+        description,
       };
     }
 
@@ -158,6 +173,7 @@ export class UpcomingFixturesComponent implements OnInit {
       vsMarket: { marketProb, edge: modelProb - marketProb },
       flagged: singletonEdge >= EDGE_FLAG_THRESHOLD,
       confidence,
+      description,
     };
   }
 

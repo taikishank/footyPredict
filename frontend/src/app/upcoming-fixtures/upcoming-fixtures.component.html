@@ -99,11 +99,13 @@
                     >
                       <span>
                         @if (dcPick.vsMarket; as vs) {
-                          Double chance: {{ dcPick.label }} ({{ dcPick.modelProb * 100 | number: '1.0-0' }}%
+                          Double chance: {{ dcPick.label }} ({{ dcPick.description }}) -
+                          {{ dcPick.modelProb * 100 | number: '1.0-0' }}%
                           vs market {{ vs.marketProb * 100 | number: '1.0-0' }}%, edge
-                          {{ vs.edge * 100 | number: '1.0-0' }}pp)
+                          {{ vs.edge * 100 | number: '1.0-0' }}pp
                         } @else {
-                          Double chance: {{ dcPick.label }} ({{ dcPick.modelProb * 100 | number: '1.0-0' }}%)
+                          Double chance: {{ dcPick.label }} ({{ dcPick.description }}) -
+                          {{ dcPick.modelProb * 100 | number: '1.0-0' }}%
                         }
                       </span>
                       <span
