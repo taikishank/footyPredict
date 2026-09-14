@@ -46,6 +46,14 @@ MODEL_V2_LOCAL_PATH = Path(
     )
 )
 
+# Short tag for the model that serves predictions and whose edges snapshots
+# get graded, written to edges.model_version and carried into
+# prediction_calls. Deliberately coarse ('v1'/'v2') rather than the exact
+# artifact fingerprint model_v2.model_version() returns: reports slice on
+# the tier, and an mtime-based fingerprint would start a new bucket on every
+# retrain. backtest/stats.py --model reads this same value.
+SERVED_MODEL_VERSION = os.environ.get("SERVED_MODEL_VERSION", "v2")
+
 # Angular dev server origins allowed to call this API cross-origin (see
 # app.ts's `ng serve` / environment.ts's apiBaseUrl). Comma-separated;
 # override via env once there's a real deployed frontend origin.

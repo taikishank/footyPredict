@@ -73,17 +73,29 @@ def get_fixture(fixture_id: int) -> FixtureRow | None:
         return dict(zip(keys, row))  # type: ignore[return-value]
 
 
-def get_team_history(
-    team_id: int, before: datetime, limit: int, season_id: int
-) -> list[TeamResultRow]:
+def get_team_history(team_id: int, before: datetime, limit: int) -> list[TeamResultRow]:
     """Most-recent-last list of a team's prior *completed* results strictly
-    before `before` within the given season, for feeding into
-    feature_lib.team_form(). Scoped to `season_id` so history never bleeds
-    back into a previous season - a team's form should only reflect the
-    season it's currently playing, so a fresh season starts with no
-    predictions until MIN_WINDOW matches have been played in it, by design.
+    before `before`, for feeding into feature_lib.team_form().
+
+    Deliberately *not* season-scoped, which it was until ml/FINDINGS_SCOPE.md
+    measured what the scoping cost. It was the train/serve skew in this
+    project: ml/build_features.py has always taken a club's last MAX_WINDOW
+    matches whatever season they fall in, so a season-scoped query here fed
+    the model an input distribution it was never fitted on - and refused 91%
+    of August outright, because no club has MIN_WINDOW matches in a season
+    that has just started.
+
+    The ablation (ml/scope_ablate.py, rolling origin, 19,810 fixtures) found
+    the two windows to be the same feature wherever both exist: -0.00001 log
+    loss [-0.00058, +0.00057], and +0.00078 [-0.00329, +0.00512] on the
+    August/September fixtures where the scoped window is a partial one. So
+    the scoping bought no accuracy and cost 8.3% of all fixtures, which is
+    the entire -0.00707 between the two arms once a refusal is priced at the
+    class base rate.
+
     Rows without a final score (e.g. still-unbackfilled upcoming-fixture
-    placeholders) are excluded so MIN_WINDOW only counts usable history."""
+    placeholders) are excluded so MIN_WINDOW only counts usable history.
+    """
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -91,11 +103,10 @@ def get_team_history(
             FROM fixtures
             WHERE (home_id = %s OR away_id = %s) AND starting_at < %s
               AND home_goals IS NOT NULL AND away_goals IS NOT NULL
-              AND (raw ->> 'season_id')::bigint = %s
             ORDER BY starting_at DESC
             LIMIT %s
             """,
-            (team_id, team_id, before, season_id, limit),
+            (team_id, team_id, before, limit),
         )
         rows = cur.fetchall()
 
@@ -114,9 +125,9 @@ def get_team_history(
 def get_team_goal_volume(team_id: int, before: datetime, window: int) -> float:
     """A team's total goals scored over its last `window` completed fixtures
     strictly before `before` - feeds feature_lib.club_goals_relative(). Not
-    season-scoped, unlike get_team_history(): the v2 model's GOALS_WINDOW
-    (38) is close to a full season on purpose, so it's meant to span a season
-    boundary early in a new one rather than reset to nothing."""
+    season-scoped, and now neither is get_team_history(): the v2 model's
+    GOALS_WINDOW (38) is close to a full season on purpose, so it's meant to
+    span a season boundary early in a new one rather than reset to nothing."""
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -256,13 +267,16 @@ def insert_edge(
     edge: dict,
     flagged: bool,
     prices: dict,
+    model_version: str,
 ) -> None:
     """Appends a snapshot of model vs. market probabilities to `edges`, so
     backtest/grade_calls.py has real history to grade against outcomes
     (PROJECT_SPEC.md Phase 4). `prices` carries the decimal odds at this
     snapshot (home_win/draw/away_win keys) so a graded prediction_call can
     later simulate P&L against what was actually available, not the closing
-    price."""
+    price. `model_version` tags which model produced model_probs (config's
+    SERVED_MODEL_VERSION) so grading can never mix two models' records - the
+    column has no DB default, so omitting it is an error, not a silent 'v1'."""
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -270,8 +284,8 @@ def insert_edge(
                 fixture_id, model_home, model_draw, model_away,
                 market_home, market_draw, market_away,
                 edge_home, edge_draw, edge_away, flagged,
-                home_price, draw_price, away_price
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                home_price, draw_price, away_price, model_version
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 fixture_id,
@@ -280,5 +294,6 @@ def insert_edge(
                 edge["home_win"], edge["draw"], edge["away_win"],
                 flagged,
                 prices["home_win"], prices["draw"], prices["away_win"],
+                model_version,
             ),
         )

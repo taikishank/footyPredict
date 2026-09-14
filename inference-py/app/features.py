@@ -51,16 +51,13 @@ def build_match_features(fixture_id: int) -> MatchFeatures | None:
     if fixture is None:
         return None
 
-    season_id = fixture["season_id"]
-    home_history = get_team_history(
-        fixture["home_id"], fixture["starting_at"], MAX_WINDOW, season_id
-    )
+    # No season_id: get_team_history() spans season boundaries, matching
+    # ml/build_features.py's window exactly (ml/FINDINGS_SCOPE.md).
+    home_history = get_team_history(fixture["home_id"], fixture["starting_at"], MAX_WINDOW)
     if len(home_history) < MIN_WINDOW:
         raise NotEnoughHistoryError(fixture["home_id"], len(home_history))
 
-    away_history = get_team_history(
-        fixture["away_id"], fixture["starting_at"], MAX_WINDOW, season_id
-    )
+    away_history = get_team_history(fixture["away_id"], fixture["starting_at"], MAX_WINDOW)
     if len(away_history) < MIN_WINDOW:
         raise NotEnoughHistoryError(fixture["away_id"], len(away_history))
 

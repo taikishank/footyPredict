@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, model, model_comparison, model_v2
+from app import db, main, model_comparison, model_v2
+from app.config import SERVED_MODEL_VERSION
 from app.features import MatchFeatures, NotEnoughHistoryError
 
 FIXTURE = {
@@ -24,15 +25,12 @@ def _no_real_startup(monkeypatch):
     # both out so the client fixture doesn't need live infra.
     monkeypatch.setattr(db.pool, "open", lambda: None)
     monkeypatch.setattr(db.pool, "close", lambda: None)
-    monkeypatch.setattr(model, "load_model", lambda: None)
-    monkeypatch.setattr(model, "is_loaded", lambda: True)
-    monkeypatch.setattr(model, "model_version", lambda: "test-model@1")
-    # v2's artifact may genuinely exist on disk (ml/train_v2.py writes one) -
-    # stub it closed by default so tests are isolated from local dev state;
-    # tests that care about the v2 path override is_loaded/predict_proba
-    # themselves.
+    # v2 is the serving model (config.SERVED_MODEL_VERSION), and its artifact
+    # may genuinely exist on disk (ml/train_v2.py writes one) - stub loading
+    # out so tests are isolated from local dev state.
     monkeypatch.setattr(model_v2, "load_model", lambda: None)
-    monkeypatch.setattr(model_v2, "is_loaded", lambda: False)
+    monkeypatch.setattr(model_v2, "is_loaded", lambda: True)
+    monkeypatch.setattr(model_v2, "model_version", lambda: "test-model@1")
 
 
 @pytest.fixture
@@ -51,10 +49,12 @@ def test_get_prediction_returns_probabilities(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+        lambda fixture_id: MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
+        ),
     )
     monkeypatch.setattr(
-        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
 
     resp = client.get("/predictions/123")
@@ -85,10 +85,12 @@ def test_get_live_prediction_returns_adjusted_probabilities(client, monkeypatch)
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+        lambda fixture_id: MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
+        ),
     )
     monkeypatch.setattr(
-        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
     monkeypatch.setattr(
         db,
@@ -114,10 +116,12 @@ def test_get_live_prediction_404_when_fixture_not_live(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+        lambda fixture_id: MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
+        ),
     )
     monkeypatch.setattr(
-        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
     monkeypatch.setattr(db, "get_live_state", lambda fixture_id: None)
 
@@ -130,10 +134,12 @@ def test_ws_live_prediction_streams_on_state_change(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+        lambda fixture_id: MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
+        ),
     )
     monkeypatch.setattr(
-        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
 
     states = [
@@ -179,11 +185,13 @@ def test_list_upcoming_fixtures(client, monkeypatch):
     def _build_match_features(fixture_id):
         if fixture_id == 456:
             raise NotEnoughHistoryError(team_id=2, n_available=1)
-        return MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54)))
+        return MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
+        )
 
     monkeypatch.setattr(main, "build_match_features", _build_match_features)
     monkeypatch.setattr(
-        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
     monkeypatch.setattr(db, "get_odds", lambda fixture_id: None)
 
@@ -199,13 +207,14 @@ def test_list_upcoming_fixtures(client, monkeypatch):
     assert body["fixtures"][0]["flagged"] is False
     assert body["fixtures"][1]["probabilities"] is None
     assert body["fixtures"][1]["model_version"] is None
-    # model_v2 isn't loaded in this test (no artifact on disk, no S3 creds),
-    # so the v2 fields should come back empty rather than erroring.
-    assert body["fixtures"][0]["probabilities_v2"] is None
-    assert body["fixtures"][0]["model_version_v2"] is None
+    # probabilities_v2/model_version_v2 predate v2 becoming the serving path
+    # and now just mirror the served fields (see main.list_upcoming_fixtures);
+    # they stay populated until the frontend stops reading them.
+    assert body["fixtures"][0]["probabilities_v2"] == body["fixtures"][0]["probabilities"]
+    assert body["fixtures"][0]["model_version_v2"] == "test-model@1"
 
 
-def test_list_upcoming_fixtures_includes_v2_prediction_when_loaded(client, monkeypatch):
+def test_list_upcoming_fixtures_serves_v2_probabilities(client, monkeypatch):
     monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
     monkeypatch.setattr(
         main,
@@ -215,7 +224,7 @@ def test_list_upcoming_fixtures_includes_v2_prediction_when_loaded(client, monke
         ),
     )
     monkeypatch.setattr(
-        model, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
     monkeypatch.setattr(db, "get_odds", lambda fixture_id: None)
     monkeypatch.setattr(model_v2, "is_loaded", lambda: True)
@@ -265,10 +274,12 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(fixture=FIXTURE, vector=np.zeros((1, 54))),
+        lambda fixture_id: MatchFeatures(
+            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
+        ),
     )
     monkeypatch.setattr(
-        model, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+        model_v2, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
     )
     monkeypatch.setattr(
         db,
@@ -282,8 +293,11 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
     monkeypatch.setattr(
         db,
         "insert_edge",
-        lambda fixture_id, model_probs, market_probs, edge, flagged, prices: inserted.update(
-            fixture_id=fixture_id, flagged=flagged, prices=prices
+        lambda fixture_id, model_probs, market_probs, edge, flagged, prices, model_version: (
+            inserted.update(
+                fixture_id=fixture_id, flagged=flagged, prices=prices,
+                model_probs=model_probs, model_version=model_version,
+            )
         ),
     )
 
@@ -295,10 +309,16 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
     assert fx["edge"]["home_win"] == pytest.approx(0.1)
     # |0.1| >= EDGE_FLAG_THRESHOLD (0.05 default), so this should be flagged.
     assert fx["flagged"] is True
+    # The snapshot persisted for grading must be the served (v2) model's
+    # probabilities, tagged as such - backtest/grade_calls.py grades strictly
+    # one model_version, so a mislabelled row would silently corrupt the
+    # v2 record with a v1 prediction.
     assert inserted == {
         "fixture_id": 123,
         "flagged": True,
         "prices": {"home_win": 2.0, "draw": 3.6, "away_win": 4.5},
+        "model_probs": {"home_win": 0.6, "draw": 0.25, "away_win": 0.15},
+        "model_version": SERVED_MODEL_VERSION,
     }
 
 

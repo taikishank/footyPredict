@@ -89,6 +89,14 @@ ALTER TABLE edges ADD COLUMN IF NOT EXISTS home_price NUMERIC;
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS draw_price NUMERIC;
 ALTER TABLE edges ADD COLUMN IF NOT EXISTS away_price NUMERIC;
 
+-- Which model produced the snapshot. inference-py served v1 until the
+-- switch to the v2 challenger (team form + club_goals_relative), so DEFAULT
+-- 'v1' correctly labels every pre-existing row; the default is then dropped
+-- so a writer that forgets the column fails loudly instead of silently
+-- mislabelling v2 rows as v1. Only inference-py inserts here.
+ALTER TABLE edges ADD COLUMN IF NOT EXISTS model_version TEXT NOT NULL DEFAULT 'v1';
+ALTER TABLE edges ALTER COLUMN model_version DROP DEFAULT;
+
 -- prediction_calls is the graded scorecard: one row per fixture the model
 -- ever priced, selecting the edges snapshot closest to kickoff as "the call"
 -- (see backtest/grade_calls.py) and recording what actually happened. edges
@@ -122,6 +130,24 @@ CREATE TABLE IF NOT EXISTS prediction_calls (
 ALTER TABLE prediction_calls ADD COLUMN IF NOT EXISTS flagged BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE prediction_calls ADD COLUMN IF NOT EXISTS ever_flagged BOOLEAN NOT NULL DEFAULT true;
 
+-- Carried over from the graded edges snapshot, so a report can never mix
+-- two models' records. The primary key widens to include it: one fixture
+-- can legitimately be graded once per model version.
+ALTER TABLE prediction_calls ADD COLUMN IF NOT EXISTS model_version TEXT NOT NULL DEFAULT 'v1';
+ALTER TABLE prediction_calls ALTER COLUMN model_version DROP DEFAULT;
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+		WHERE i.indrelid = 'prediction_calls'::regclass AND i.indisprimary
+		  AND a.attname = 'model_version'
+	) THEN
+		ALTER TABLE prediction_calls DROP CONSTRAINT prediction_calls_pkey;
+		ALTER TABLE prediction_calls ADD PRIMARY KEY (fixture_id, model_version);
+	END IF;
+END $$;
+
 -- double_chance_calls is prediction_calls' binary-market sibling: for the
 -- same flagged edge snapshot, grades the double-chance bet that excludes
 -- whichever outcome prediction_calls.call_side names (e.g. call_side
@@ -150,6 +176,22 @@ CREATE TABLE IF NOT EXISTS double_chance_calls (
 -- Same flagged/ever_flagged split as prediction_calls, for the same reason.
 ALTER TABLE double_chance_calls ADD COLUMN IF NOT EXISTS flagged BOOLEAN NOT NULL DEFAULT true;
 ALTER TABLE double_chance_calls ADD COLUMN IF NOT EXISTS ever_flagged BOOLEAN NOT NULL DEFAULT true;
+
+-- Same model tag and widened key as prediction_calls, for the same reason.
+ALTER TABLE double_chance_calls ADD COLUMN IF NOT EXISTS model_version TEXT NOT NULL DEFAULT 'v1';
+ALTER TABLE double_chance_calls ALTER COLUMN model_version DROP DEFAULT;
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+		WHERE i.indrelid = 'double_chance_calls'::regclass AND i.indisprimary
+		  AND a.attname = 'model_version'
+	) THEN
+		ALTER TABLE double_chance_calls DROP CONSTRAINT double_chance_calls_pkey;
+		ALTER TABLE double_chance_calls ADD PRIMARY KEY (fixture_id, model_version);
+	END IF;
+END $$;
 `
 
 type Store struct {
