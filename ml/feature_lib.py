@@ -108,9 +108,15 @@ def extract_team_stats(fixture: dict, participant_id: int) -> dict:
     return stats
 
 
-def team_form(history: list[dict]) -> dict:
-    """history: most-recent-last list of {"goals_for", "goals_against", "stats"}."""
-    window = history[-MAX_WINDOW:]
+def team_form(history: list[dict], window_size: int = MAX_WINDOW) -> dict:
+    """history: most-recent-last list of {"goals_for", "goals_against", "stats"}.
+
+    window_size defaults to MAX_WINDOW - the served recipe. It is a parameter
+    only so the offline sweep (ml/build_window_features.py) can replay the
+    archive at several window lengths in one pass; training and inference both
+    take the default, so the two stay in lockstep as before.
+    """
+    window = history[-window_size:]
     n = len(window)
     form = {
         "goals_for": sum(h["goals_for"] for h in window) / n,
