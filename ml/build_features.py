@@ -56,6 +56,9 @@ def parse_fixture(fixture: dict) -> dict:
     return {
         "fixture_id": fixture["id"],
         "league_id": fixture["league_id"],
+        # Carried but not emitted as a feature: build_scope_features.py needs
+        # it to replay the season-scoped serving recipe (see scope_lib.py).
+        "season_id": fixture["season_id"],
         "date": fixture["starting_at"],
         "home_id": home["id"],
         "away_id": away["id"],
