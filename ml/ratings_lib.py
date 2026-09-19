@@ -457,3 +457,96 @@ ARMS = {
     "gdelo": GoalDiffElo,
     "atkdef": AttackDefence,
 }
+
+
+# A league's season rolls over in midsummer, so the season a fixture belongs to
+# is its year minus one for anything before July. Derived from the date rather
+# than trusted from season_id because season_id is a provider surrogate with no
+# ordering guarantee - subtracting two of them would be meaningless, and "how
+# many seasons has this club been away" is exactly a subtraction.
+SEASON_CUTOFF_MONTH = 7
+
+
+def season_of(date) -> int:
+    """The season a date belongs to. Takes anything with .year/.month, so the
+    offline build's pandas Timestamps and the service's datetimes both work -
+    this module stays pandas-free because the service imports it."""
+    return date.year - (1 if date.month < SEASON_CUTOFF_MONTH else 0)
+
+
+class Replay:
+    """The season bookkeeping around one or more Ratings.
+
+    A Rating knows how to update itself from a result; it does not know when a
+    season turned over, which club has been away for four years, or that
+    features() must be called strictly before update(). That driver logic used
+    to live in build_rating_features.build() and is here instead because the
+    service needs the identical walk: a rating served from a different loop
+    than the one that trained it is a train/serve skew of exactly the kind
+    FINDINGS_SCOPE.md found in the form window, and it would be invisible.
+
+    Usage is the offline loop's order, per fixture and in date order:
+
+        replay.roll_to(league_id, home_id, away_id, date)  # season rollovers
+        row = replay.features(home_id, away_id, league_id) # strictly before
+        replay.record(league_id, home_id, away_id, date, home_goals, away_goals)
+
+    roll_to() mutates - a rollover regresses ratings toward the league mean -
+    but it is idempotent within a season and only ever moves forward, so
+    calling it for an unplayed fixture leaves the state exactly where the first
+    result of that season would have put it. That is what lets the service roll
+    a *copy* forward to an upcoming fixture's date and read features off it
+    without disturbing the state it replayed.
+    """
+
+    def __init__(self, arms: dict[str, "Rating"]) -> None:
+        self.arms = arms
+        #: Season in which each club was last seen, so a gap is measured in
+        #: seasons rather than days. A club that never left has an elapsed of 1
+        #: at each rollover and is regressed once, as intended.
+        self.last_season: dict[int, int] = {}
+        #: Season each league was last seen in, so the re-centering that keeps
+        #: the level columns from becoming an era proxy fires once per league
+        #: per season rather than once per fixture.
+        self.league_season: dict[int, int] = {}
+
+    def roll_to(self, league_id: int, home_id: int, away_id: int, date) -> None:
+        season = season_of(date)
+
+        # Strictly forward. The offline build compares with != because a
+        # date-ordered walk can only ever move a league's season upward, and
+        # the two are identical there. The service is not so lucky: it may be
+        # asked for an upcoming fixture and then for an earlier one, and a !=
+        # would recenter the league a second time on the way back down.
+        if season > self.league_season.get(league_id, season):
+            self.arms_recenter(league_id)
+        if league_id not in self.league_season or season > self.league_season[league_id]:
+            self.league_season[league_id] = season
+
+        for team_id in (home_id, away_id):
+            previous = self.last_season.get(team_id)
+            if previous is not None and season > previous:
+                for arm in self.arms.values():
+                    arm.season_boundary(league_id, team_id, season - previous)
+                # Recorded here, not only in record(): a club whose rating has
+                # been regressed four seasons must not be regressed four more
+                # the next time it is asked about before it has played.
+                self.last_season[team_id] = season
+
+    def arms_recenter(self, league_id: int) -> None:
+        for arm in self.arms.values():
+            arm.recenter(league_id)
+
+    def features(self, home_id: int, away_id: int, league_id: int) -> dict[str, float]:
+        row: dict[str, float] = {}
+        for arm in self.arms.values():
+            row.update(arm.features(home_id, away_id, league_id))
+        return row
+
+    def record(self, league_id: int, home_id: int, away_id: int, date,
+               home_goals: int, away_goals: int) -> None:
+        for arm in self.arms.values():
+            arm.update(home_id, away_id, league_id, home_goals, away_goals)
+        season = season_of(date)
+        self.last_season[home_id] = season
+        self.last_season[away_id] = season

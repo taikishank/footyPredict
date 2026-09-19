@@ -36,19 +36,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from ratings_lib import ARMS
+from ratings_lib import ARMS, SEASON_CUTOFF_MONTH, Replay, season_of  # noqa: F401
 
 RAW_DIR = Path(__file__).parent / "data" / "raw"
 FEATURES_DIR = Path(__file__).parent / "data" / "features"
 INDEX_PATH = FEATURES_DIR / "results_index.parquet"
 OUT_PATH = FEATURES_DIR / "ratings.csv"
 
-# A league's season rolls over in midsummer, so the season a fixture belongs
-# to is its year minus one for anything before July. Derived from the date
-# rather than trusted from season_id because season_id is a provider surrogate
-# with no ordering guarantee - subtracting two of them would be meaningless,
-# and "how many seasons has this club been away" is exactly a subtraction.
-SEASON_CUTOFF_MONTH = 7
+# SEASON_CUTOFF_MONTH and season_of() now live in ratings_lib, next to the
+# Replay driver that uses them, because the inference service needs the same
+# definition and must not import this build script. Re-exported above so this
+# module's own callers and --diagnose keep working unchanged.
 
 # Mirrors build_features.py: the provider carries a final score under this
 # type, and a per-participant goals statistic as the fallback for fixtures
@@ -101,51 +99,52 @@ def build_index() -> pd.DataFrame:
         "home_name", "away_name", "home_goals", "away_goals",
     ])
     index["date"] = pd.to_datetime(index["date"])
-    return index.sort_values("date").reset_index(drop=True)
+    return order(index)
 
 
-def season_of(date: pd.Timestamp) -> int:
-    return date.year - (1 if date.month < SEASON_CUTOFF_MONTH else 0)
+def order(index: pd.DataFrame) -> pd.DataFrame:
+    """The replay order, and the only one that is reproducible off a different
+    source than this parquet.
+
+    68% of fixtures share a kickoff timestamp with at least one other - a
+    Saturday 3pm round is one instant - so sorting on `date` alone leaves 27k
+    rows in an order decided by pandas' default quicksort, which is neither
+    stable nor derivable from anything the inference service can see. It is
+    deterministic given this file, which is why it was never noticed, and that
+    is exactly the shape of the train/serve skew FINDINGS_SCOPE.md found in the
+    form window: reproducible offline, wrong the moment a second implementation
+    has to agree with it.
+
+    It is not a small effect. Re-running the replay under the two orders moves
+    `exp_goal_diff` by up to 1.62 on a single fixture, against a column SD of
+    0.66, though the mean absolute move is ~1% of an SD.
+
+    Ties break on fixture_id because it is the one column both this parquet and
+    the `fixtures` table carry, so app/db.py's get_results_index() can ORDER BY
+    the identical key.
+    """
+    return index.sort_values(["date", "fixture_id"], kind="mergesort").reset_index(drop=True)
 
 
 def build(index: pd.DataFrame) -> pd.DataFrame:
-    arms = {name: factory() for name, factory in ARMS.items()}
-    # Season in which each club was last seen, so a gap can be measured in
-    # seasons rather than days. A club that never left has an elapsed of 1 at
-    # each rollover and is regressed once, as intended.
-    last_season: dict[int, int] = {}
-    # Season each league was last seen in, so the re-centering that keeps the
-    # level columns from becoming an era proxy fires once per league per
-    # season rather than once per fixture.
-    league_season: dict[int, int] = {}
+    """One pre-match row per fixture, walking the archive in date order.
+
+    The walk itself is ratings_lib.Replay, shared with the inference service so
+    a promoted arm is served by the identical loop that trained it.
+    """
+    replay = Replay({name: factory() for name, factory in ARMS.items()})
     rows = []
 
     for fx in index.itertuples(index=False):
-        season = season_of(fx.date)
-
-        if league_season.get(fx.league_id) != season:
-            if fx.league_id in league_season:
-                for arm in arms.values():
-                    arm.recenter(fx.league_id)
-            league_season[fx.league_id] = season
-
-        for team_id in (fx.home_id, fx.away_id):
-            previous = last_season.get(team_id)
-            if previous is not None and season > previous:
-                for arm in arms.values():
-                    arm.season_boundary(fx.league_id, team_id, season - previous)
+        replay.roll_to(fx.league_id, fx.home_id, fx.away_id, fx.date)
 
         row = {"fixture_id": fx.fixture_id, "date": fx.date, "league_id": fx.league_id}
-        # Strictly before update(): a fixture must never see its own result.
-        for arm in arms.values():
-            row.update(arm.features(fx.home_id, fx.away_id, fx.league_id))
+        # Strictly before record(): a fixture must never see its own result.
+        row.update(replay.features(fx.home_id, fx.away_id, fx.league_id))
         rows.append(row)
 
-        for arm in arms.values():
-            arm.update(fx.home_id, fx.away_id, fx.league_id, fx.home_goals, fx.away_goals)
-
-        last_season[fx.home_id] = season
-        last_season[fx.away_id] = season
+        replay.record(fx.league_id, fx.home_id, fx.away_id, fx.date,
+                      fx.home_goals, fx.away_goals)
 
     return pd.DataFrame(rows)
 
@@ -177,7 +176,7 @@ def diagnose(index: pd.DataFrame, ratings: pd.DataFrame) -> None:
     # A club's first season in the archive against the league's incumbents,
     # measured in points per game - the quantity PROMOTED_OFFSET is a prior on.
     first_seen: dict[int, int] = {}
-    for fx in index.sort_values("date").itertuples(index=False):
+    for fx in order(index).itertuples(index=False):
         for team_id in (fx.home_id, fx.away_id):
             first_seen.setdefault(team_id, season_of(fx.date))
     ppg = {"newcomer": [0, 0], "incumbent": [0, 0]}
@@ -235,7 +234,7 @@ def main() -> None:
         FEATURES_DIR.mkdir(parents=True, exist_ok=True)
         build_index().to_parquet(INDEX_PATH, index=False)
 
-    index = pd.read_parquet(INDEX_PATH).sort_values("date").reset_index(drop=True)
+    index = order(pd.read_parquet(INDEX_PATH))
     print(f"replaying {len(index)} fixtures over {len(ARMS)} arms...")
     ratings = build(index)
 
