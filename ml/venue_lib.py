@@ -240,8 +240,8 @@ class VenueAttackDefence(AttackDefence):
         hs, as_ = self._slots(fixture_id)
         home_key, away_key = (home_id, hs), (away_id, as_)
         lam_h, lam_a = self._venue_rates(home_key, away_key, league_id)
-        err_h = home_goals - lam_h
-        err_a = away_goals - lam_a
+        err_h = self._residual(home_goals - lam_h)
+        err_a = self._residual(away_goals - lam_a)
 
         self.atk[home_key] = self._clamp(self.atk[home_key] + self.lr * err_h)
         self.dfn[away_key] = self._clamp(self.dfn[away_key] - self.lr * err_h)

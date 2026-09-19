@@ -382,6 +382,23 @@ class AttackDefence(Rating):
     def _clamp(self, value: float) -> float:
         return max(-self.MAX_RATING, min(self.MAX_RATING, value))
 
+    def _residual(self, err: float) -> float:
+        """How much of one match's surprise reaches the state.
+
+        The identity here, which is what every published number was measured
+        with: the update is linear in `goals - lambda`, because that is the
+        Poisson gradient. `_clamp` above bounds the *rating*, so it stops a
+        runaway across many matches and does nothing about a single one - a
+        6-0 against a lambda of 1.5 moves an attack rating nine times as far
+        as a 2-0 does.
+
+        Whether that is right is rwi_lib.BoundedResidual's question. This hook
+        exists so that arm is a subclass rather than a copy of the update
+        below, and returning `err` unchanged keeps the served ratings
+        byte-identical (build_rwi_features.py asserts it).
+        """
+        return err
+
     def update(
         self, home_id: int, away_id: int, league_id: int, home_goals: int, away_goals: int
     ) -> None:
@@ -391,8 +408,8 @@ class AttackDefence(Rating):
         self.means.note(league_id, away_id)
 
         lam_h, lam_a = self._rates(home_id, away_id, league_id)
-        err_h = home_goals - lam_h
-        err_a = away_goals - lam_a
+        err_h = self._residual(home_goals - lam_h)
+        err_a = self._residual(away_goals - lam_a)
 
         # d/d(atk_home) log L = goals_home - lambda_home, and defence enters
         # the opponent's rate with the opposite sign - so conceding fewer than
