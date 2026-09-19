@@ -53,11 +53,12 @@ var clubStopWords = map[string]bool{
 // SportMonks-style full name would produce, so e.g. "Man City" and
 // "Manchester City" share a token instead of scoring as unrelated.
 var tokenAliases = map[string]string{
-	"man":    "manchester",
-	"utd":    "united",
-	"spurs":  "tottenham",
-	"wolves": "wolverhampton",
-	"lyon":   "lyonnais",
+	"man":     "manchester",
+	"utd":     "united",
+	"spurs":   "tottenham",
+	"wolves":  "wolverhampton",
+	"lyon":    "lyonnais",
+	"munchen": "munich",
 }
 
 // normalizeTeamName lowercases, strips punctuation, removes generic club
