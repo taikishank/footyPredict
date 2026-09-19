@@ -192,6 +192,91 @@ BEGIN
 		ALTER TABLE double_chance_calls ADD PRIMARY KEY (fixture_id, model_version);
 	END IF;
 END $$;
+
+-- edges' key widens the same way, and for the same reason - it just took
+-- longer to notice. The key predates model_version, so it is
+-- (fixture_id, computed_at): one snapshot per fixture per instant, whoever
+-- wrote it. That was true while only inference-py inserted here and only one
+-- model served. It stopped being true when backtest/backfill_predictions.py
+-- began reconstructing a second model's snapshots over already-played
+-- fixtures, because both models derive computed_at from the same odds row's
+-- fetched_at and therefore collide on the key. The loser was silently
+-- discarded by that script's ON CONFLICT DO NOTHING: a v3 reconstruction of
+-- 43 fixtures wrote 12 and reported 43.
+--
+-- Both child tables already carry model_version and already key on it, so the
+-- two composite foreign keys widen with the parent rather than being dropped.
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+		WHERE i.indrelid = 'edges'::regclass AND i.indisprimary
+		  AND a.attname = 'model_version'
+	) THEN
+		ALTER TABLE prediction_calls
+			DROP CONSTRAINT prediction_calls_fixture_id_edge_computed_at_fkey;
+		ALTER TABLE double_chance_calls
+			DROP CONSTRAINT double_chance_calls_fixture_id_edge_computed_at_fkey;
+
+		ALTER TABLE edges DROP CONSTRAINT edges_pkey;
+		ALTER TABLE edges ADD PRIMARY KEY (fixture_id, computed_at, model_version);
+
+		ALTER TABLE prediction_calls
+			ADD CONSTRAINT prediction_calls_fixture_id_edge_computed_at_fkey
+			FOREIGN KEY (fixture_id, edge_computed_at, model_version)
+			REFERENCES edges (fixture_id, computed_at, model_version);
+		ALTER TABLE double_chance_calls
+			ADD CONSTRAINT double_chance_calls_fixture_id_edge_computed_at_fkey
+			FOREIGN KEY (fixture_id, edge_computed_at, model_version)
+			REFERENCES edges (fixture_id, computed_at, model_version);
+	END IF;
+END $$;
+
+-- Which selection rule turned the snapshot's probabilities into this bet
+-- (backtest/selection.py). model_version and call_rule are different axes:
+-- the first says which artifact produced model_home/draw/away, the second
+-- what was done with them. Every row written before the split was following
+-- max_edge, which is what DEFAULT 'max_edge' labels them; the default is
+-- then dropped so a writer that forgets the column fails loudly rather than
+-- silently mislabelling a belief-arm row as an edge-arm one - the same
+-- reason model_version drops its default above.
+--
+-- The key widens again: one fixture is legitimately graded once per model
+-- version PER RULE, and the two rows deliberately share an edges snapshot,
+-- so the snapshot foreign key must NOT widen with it.
+ALTER TABLE prediction_calls ADD COLUMN IF NOT EXISTS call_rule TEXT NOT NULL DEFAULT 'max_edge';
+ALTER TABLE prediction_calls ALTER COLUMN call_rule DROP DEFAULT;
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+		WHERE i.indrelid = 'prediction_calls'::regclass AND i.indisprimary
+		  AND a.attname = 'call_rule'
+	) THEN
+		ALTER TABLE prediction_calls DROP CONSTRAINT prediction_calls_pkey;
+		ALTER TABLE prediction_calls ADD PRIMARY KEY (fixture_id, model_version, call_rule);
+	END IF;
+END $$;
+
+-- Same column and same widened key on the DC arm, for the same reason. The
+-- DC arm selects its own side, so it has its own rule of the same name
+-- rather than inheriting the singles pick (see backtest/selection.py).
+ALTER TABLE double_chance_calls ADD COLUMN IF NOT EXISTS call_rule TEXT NOT NULL DEFAULT 'max_edge';
+ALTER TABLE double_chance_calls ALTER COLUMN call_rule DROP DEFAULT;
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY (i.indkey)
+		WHERE i.indrelid = 'double_chance_calls'::regclass AND i.indisprimary
+		  AND a.attname = 'call_rule'
+	) THEN
+		ALTER TABLE double_chance_calls DROP CONSTRAINT double_chance_calls_pkey;
+		ALTER TABLE double_chance_calls ADD PRIMARY KEY (fixture_id, model_version, call_rule);
+	END IF;
+END $$;
 `
 
 type Store struct {
