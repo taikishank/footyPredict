@@ -43,8 +43,11 @@ class UpcomingFixture(BaseModel):
     market: Probabilities | None = None
     edge: Probabilities | None = None
     flagged: bool = False
-    # The v2 challenger's prediction (team form + club_goals_relative, see
-    # app/model_v2.py) shown alongside the incumbent's - None under the same
+    # Legacy aliases of `probabilities`/`model_version`, kept only until the
+    # frontend stops reading them. The name is now wrong in both halves: they
+    # carry whatever SERVED_MODEL_VERSION names, not v2, and there is no
+    # "challenger alongside the incumbent" here - see main.py's comment at the
+    # assignment for why they follow the served model. None under the same
     # condition as `probabilities`.
     probabilities_v2: Probabilities | None = None
     model_version_v2: str | None = None
@@ -59,6 +62,11 @@ class UpcomingFixturesResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     model_version: str | None = None
+    # Present once app/ratings_state.py has replayed. Carries n_results and
+    # latest_result because those are what say whether the served ratings are
+    # the trained ones - a count far from the training archive's means the
+    # service is reading a different history than ml/ did.
+    ratings: dict | None = None
 
 
 class ModelPerformance(BaseModel):

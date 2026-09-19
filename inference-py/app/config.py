@@ -46,13 +46,52 @@ MODEL_V2_LOCAL_PATH = Path(
     )
 )
 
+# Matches ml/train_v3.py: v2's columns plus the seven `atkdef` rating columns,
+# fitted at the retuned capacity ml/FINDINGS_CAPACITY.md settled on. Unlike
+# train_v2.py, train_v3.py only uploads under --publish, so this key may not
+# exist yet.
+MODEL_V3_S3_KEY = os.environ.get("MODEL_V3_S3_KEY", "2000_v3_atkdef/model.json")
+MODEL_V3_LOCAL_PATH = Path(
+    os.environ.get(
+        "MODEL_V3_LOCAL_PATH",
+        Path(__file__).resolve().parents[2] / "ml" / "models" / "match_outcome_model_v3.json",
+    )
+)
+
+# How long a replayed rating state may serve before app/ratings_state.py
+# rebuilds it. The replay costs ~0.4s over the whole archive, so this trades a
+# rare half-second hiccup on one request against how stale a rating may get;
+# 0 disables refreshing entirely (useful in tests). An hour is well inside a
+# fixture cadence - no league plays twice in one.
+RATINGS_REFRESH_SECONDS = float(os.environ.get("RATINGS_REFRESH_SECONDS", "3600"))
+
 # Short tag for the model that serves predictions and whose edges snapshots
 # get graded, written to edges.model_version and carried into
 # prediction_calls. Deliberately coarse ('v1'/'v2') rather than the exact
 # artifact fingerprint model_v2.model_version() returns: reports slice on
 # the tier, and an mtime-based fingerprint would start a new bucket on every
 # retrain. backtest/stats.py --model reads this same value.
-SERVED_MODEL_VERSION = os.environ.get("SERVED_MODEL_VERSION", "v2")
+#
+# v3 since the archive backfill made the comparison possible. The promotion
+# rests on two offline lines, both measured on the chronological holdout
+# neither artifact was fitted on (scripts/compare_v2_v3_served.py, 7,919
+# fixtures):
+#
+#   v3 beats v2 by +0.00638 log loss on the inputs the service actually
+#   produces, 95% CI [+0.00337, +0.00933], P(v3 better) 1.000. Feeding served
+#   rather than trained inputs costs 5% of that margin, not the margin.
+#
+#   v3 carries 4.31% of its total gain on the two `club_goals_relative`
+#   columns against v2's 23.43%. Those are the only inputs whose serving
+#   definition cannot be made identical to their training one (see
+#   db.get_league_goal_volume_reference), so the promoted model is also the
+#   one less exposed to the project's one irreducible train/serve gap.
+#
+# Prerequisite, not incidental: v3's rating columns are replayed state, and
+# that replay is only the trained one because `fixtures` now holds the whole
+# archive. scripts/verify_archive_read.py is the gate that says so and exits
+# non-zero when it stops being true.
+SERVED_MODEL_VERSION = os.environ.get("SERVED_MODEL_VERSION", "v3")
 
 # Angular dev server origins allowed to call this API cross-origin (see
 # app.ts's `ng serve` / environment.ts's apiBaseUrl). Comma-separated;

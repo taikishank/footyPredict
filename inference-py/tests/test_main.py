@@ -4,9 +4,36 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, model_comparison, model_v2
+from app import db, main, model_comparison, ratings_state, served
 from app.config import SERVED_MODEL_VERSION
 from app.features import MatchFeatures, NotEnoughHistoryError
+
+#: What ratings_state reports to /health when the served model needs it. Only
+#: read when served.NEEDS_RATINGS; the values are arbitrary but the shape is
+#: ratings_state.state_summary()'s.
+RATINGS_SUMMARY = {
+    "arm": "atkdef", "n_results": 40110,
+    "latest_result": "2026-09-13T16:30:00+00:00", "age_seconds": 0.0,
+}
+
+#: Column counts per vector, matching app/features.py's MatchFeatures: 54 form
+#: columns, +2 club_goals_relative for v2, +7 atkdef ratings for v3.
+VECTOR_WIDTHS = {"vector": 54, "v2_vector": 56, "v3_vector": 63}
+
+
+def match_features(fixture=None) -> MatchFeatures:
+    """A MatchFeatures whose *served* vector is populated.
+
+    Tests care that the request handler gets a row the served model can eat,
+    not which column count that is. Building it from served.VECTOR_ATTR means
+    a promotion does not require editing every test that stubs a prediction -
+    which was the bulk of the v2 -> v3 churn.
+    """
+    vectors = {name: None for name in VECTOR_WIDTHS}
+    vectors["vector"] = np.zeros((1, VECTOR_WIDTHS["vector"]))
+    vectors[served.VECTOR_ATTR] = np.zeros((1, VECTOR_WIDTHS[served.VECTOR_ATTR]))
+    return MatchFeatures(fixture=fixture or FIXTURE, **vectors)
+
 
 FIXTURE = {
     "fixture_id": 123,
@@ -25,12 +52,23 @@ def _no_real_startup(monkeypatch):
     # both out so the client fixture doesn't need live infra.
     monkeypatch.setattr(db.pool, "open", lambda: None)
     monkeypatch.setattr(db.pool, "close", lambda: None)
-    # v2 is the serving model (config.SERVED_MODEL_VERSION), and its artifact
-    # may genuinely exist on disk (ml/train_v2.py writes one) - stub loading
-    # out so tests are isolated from local dev state.
-    monkeypatch.setattr(model_v2, "load_model", lambda: None)
-    monkeypatch.setattr(model_v2, "is_loaded", lambda: True)
-    monkeypatch.setattr(model_v2, "model_version", lambda: "test-model@1")
+    # Stub whichever module SERVED_MODEL_VERSION names, rather than naming one.
+    # The artifact may genuinely exist on disk (ml/train_*.py writes one), so
+    # loading is stubbed to isolate tests from local dev state.
+    #
+    # This used to hardcode model_v2 and assert the default was "v2", which
+    # caught the v2 -> v3 promotion loudly but then had to be rewritten by
+    # hand. Following served.MODULE cannot go stale: the next promotion moves
+    # these stubs with it.
+    monkeypatch.setattr(served.MODULE, "load_model", lambda: None)
+    monkeypatch.setattr(served.MODULE, "is_loaded", lambda: True)
+    monkeypatch.setattr(served.MODULE, "model_version", lambda: "test-model@1")
+    # A model whose input is more than a Postgres query (v3's replayed ratings)
+    # also needs its state stubbed, or served.load() reads the real archive.
+    if served.NEEDS_RATINGS:
+        monkeypatch.setattr(ratings_state, "load_state", lambda: None)
+        monkeypatch.setattr(ratings_state, "is_loaded", lambda: True)
+        monkeypatch.setattr(ratings_state, "state_summary", lambda: RATINGS_SUMMARY)
 
 
 @pytest.fixture
@@ -42,19 +80,25 @@ def client():
 def test_health(client):
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok", "model_version": "test-model@1"}
+    # `ratings` is present only for a model whose input is more than a Postgres
+    # query - app/served.py replays rating state for v3 and not for v1/v2, and
+    # /health reporting "ok" without it would be a lie for v3: the model would
+    # be loaded and unable to predict.
+    assert resp.json() == {
+        "status": "ok",
+        "model_version": "test-model@1",
+        "ratings": RATINGS_SUMMARY if served.NEEDS_RATINGS else None,
+    }
 
 
 def test_get_prediction_returns_probabilities(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(
-            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
-        ),
+        lambda fixture_id: match_features(),
     )
     monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
 
     resp = client.get("/predictions/123")
@@ -85,12 +129,10 @@ def test_get_live_prediction_returns_adjusted_probabilities(client, monkeypatch)
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(
-            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
-        ),
+        lambda fixture_id: match_features(),
     )
     monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
     monkeypatch.setattr(
         db,
@@ -116,12 +158,10 @@ def test_get_live_prediction_404_when_fixture_not_live(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(
-            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
-        ),
+        lambda fixture_id: match_features(),
     )
     monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
     monkeypatch.setattr(db, "get_live_state", lambda fixture_id: None)
 
@@ -134,12 +174,10 @@ def test_ws_live_prediction_streams_on_state_change(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(
-            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
-        ),
+        lambda fixture_id: match_features(),
     )
     monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
 
     states = [
@@ -185,13 +223,11 @@ def test_list_upcoming_fixtures(client, monkeypatch):
     def _build_match_features(fixture_id):
         if fixture_id == 456:
             raise NotEnoughHistoryError(team_id=2, n_available=1)
-        return MatchFeatures(
-            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
-        )
+        return match_features()
 
     monkeypatch.setattr(main, "build_match_features", _build_match_features)
     monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
     )
     monkeypatch.setattr(db, "get_odds", lambda fixture_id: None)
 
@@ -214,31 +250,33 @@ def test_list_upcoming_fixtures(client, monkeypatch):
     assert body["fixtures"][0]["model_version_v2"] == "test-model@1"
 
 
-def test_list_upcoming_fixtures_serves_v2_probabilities(client, monkeypatch):
+def test_list_upcoming_fixtures_legacy_v2_fields_mirror_served(client, monkeypatch):
+    """probabilities_v2/model_version_v2 carry the *served* model, not v2.
+
+    The names predate v2 becoming the serving path and are wrong in both
+    halves now that v3 serves - see app/schemas.py. This pins the behaviour
+    main.py deliberately implements so the fields cannot quietly start
+    reporting a model nobody is grading, and so deleting them once the
+    frontend stops reading them is a visible change.
+    """
     monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
-    monkeypatch.setattr(
-        main,
-        "build_match_features",
-        lambda fixture_id: MatchFeatures(
-            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
-        ),
-    )
-    monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.5, "draw": 0.3, "away_win": 0.2}
-    )
+    monkeypatch.setattr(main, "build_match_features", lambda fixture_id: match_features())
     monkeypatch.setattr(db, "get_odds", lambda fixture_id: None)
-    monkeypatch.setattr(model_v2, "is_loaded", lambda: True)
     monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+        served.MODULE,
+        "predict_proba",
+        lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15},
     )
-    monkeypatch.setattr(model_v2, "model_version", lambda: "match_outcome_model_v2.json@1")
+    monkeypatch.setattr(served.MODULE, "model_version", lambda: f"served-{SERVED_MODEL_VERSION}@1")
 
     resp = client.get("/fixtures/upcoming")
     assert resp.status_code == 200
     fx = resp.json()["fixtures"][0]
 
     assert fx["probabilities_v2"] == {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
-    assert fx["model_version_v2"] == "match_outcome_model_v2.json@1"
+    assert fx["probabilities_v2"] == fx["probabilities"]
+    assert fx["model_version_v2"] == f"served-{SERVED_MODEL_VERSION}@1"
+    assert fx["model_version_v2"] == fx["model_version"]
 
 
 def test_list_upcoming_fixtures_shows_odds_despite_not_enough_history(client, monkeypatch):
@@ -274,12 +312,10 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
     monkeypatch.setattr(
         main,
         "build_match_features",
-        lambda fixture_id: MatchFeatures(
-            fixture=FIXTURE, vector=np.zeros((1, 54)), v2_vector=np.zeros((1, 56))
-        ),
+        lambda fixture_id: match_features(),
     )
     monkeypatch.setattr(
-        model_v2, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
     )
     monkeypatch.setattr(
         db,

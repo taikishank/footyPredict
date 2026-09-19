@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from app import ratings_state
 from app.db import (
     FixtureRow,
     get_fixture,
@@ -44,6 +45,11 @@ class MatchFeatures:
     # so callers that only need the incumbent's vector (tests, mainly) don't
     # have to fabricate one.
     v2_vector: np.ndarray | None = None
+    # v3 = v2_vector's columns plus ratings_state.FIELD_ORDER (ml/train_v3.py's
+    # column order, which is rating_ablate.load()'s base_cols + the atkdef arm).
+    # None when the rating state has not been replayed - v3 is not the serving
+    # model, so a caller that only needs v2 must not be made to pay for it.
+    v3_vector: np.ndarray | None = None
 
 
 def build_match_features(fixture_id: int) -> MatchFeatures | None:
@@ -78,8 +84,19 @@ def build_match_features(fixture_id: int) -> MatchFeatures | None:
         club_goals_relative(away_volume, league_ref),
     ]
 
+    v3_vector = None
+    if ratings_state.is_loaded():
+        ratings = ratings_state.rating_features(
+            fixture["league_id"], fixture["home_id"], fixture["away_id"],
+            fixture["starting_at"],
+        )
+        v3_row = v2_row + [ratings[name] for name in ratings_state.FIELD_ORDER]
+        v3_vector = np.array(
+            [[v if v is not None else np.nan for v in v3_row]], dtype=float)
+
     return MatchFeatures(
         fixture=fixture,
         vector=np.array([row], dtype=float),
         v2_vector=np.array([[v if v is not None else np.nan for v in v2_row]], dtype=float),
+        v3_vector=v3_vector,
     )

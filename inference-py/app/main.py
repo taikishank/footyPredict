@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, model_comparison, model_v2
+from app import db, model_comparison, ratings_state, served
 from app.config import (
     CORS_ALLOWED_ORIGINS,
     EDGE_FLAG_THRESHOLD,
@@ -50,11 +50,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.pool.open()
-    # v2 is the serving path now (config.SERVED_MODEL_VERSION), so a missing
-    # artifact is fatal rather than something to degrade past: starting up
-    # without it would either serve nothing or silently fall back to a model
-    # nobody is grading. Run ml/train_v2.py to produce it.
-    model_v2.load_model()
+    # Whichever model config.SERVED_MODEL_VERSION names, plus whatever that
+    # model needs to be fed - for v3 that includes replaying the rating state.
+    # A missing piece is fatal rather than something to degrade past: starting
+    # up without it would either serve nothing or silently fall back to a model
+    # nobody is grading. See app/served.py.
+    served.load()
     yield
     db.pool.close()
 
@@ -72,8 +73,9 @@ app.add_middleware(
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(
-        status="ok" if model_v2.is_loaded() else "model not loaded",
-        model_version=model_v2.model_version() if model_v2.is_loaded() else None,
+        status="ok" if served.is_loaded() else "model not loaded",
+        model_version=served.model_version() if served.is_loaded() else None,
+        ratings=ratings_state.state_summary() if ratings_state.is_loaded() else None,
     )
 
 
@@ -87,7 +89,7 @@ def get_prediction(fixture_id: int) -> PredictionResponse:
         home_team=fixture["home_name"],
         away_team=fixture["away_name"],
         probabilities=Probabilities(**probs),
-        model_version=model_v2.model_version(),
+        model_version=served.model_version(),
     )
 
 
@@ -134,15 +136,17 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
         if features is None:
             continue  # fixture vanished between list and lookup; skip it
 
-        model_probs = model_v2.predict_proba(features.v2_vector)
+        model_probs = served.predict_proba(features)
         market, edge, flagged = _market_and_edge(features.fixture["fixture_id"], model_probs)
 
         # probabilities_v2/model_version_v2 predate v2 becoming the serving
-        # path and now just mirror `probabilities`. Kept populated so the
-        # frontend, which reads the _v2 fields, keeps working unchanged;
-        # both fields should be dropped once it reads `probabilities`.
+        # path and just mirror `probabilities`. They follow the *served* model
+        # rather than model_v2 specifically: the frontend reads these fields as
+        # "the prediction", and under SERVED_MODEL_VERSION=v3 model_v2 is not
+        # even loaded, so naming it here would raise. Drop both once the
+        # frontend reads `probabilities`.
         probs_v2 = Probabilities(**model_probs)
-        version_v2 = model_v2.model_version()
+        version_v2 = served.model_version()
 
         fixtures.append(
             UpcomingFixture(
@@ -152,7 +156,7 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
                 home_team=features.fixture["home_name"],
                 away_team=features.fixture["away_name"],
                 probabilities=Probabilities(**model_probs),
-                model_version=model_v2.model_version(),
+                model_version=served.model_version(),
                 market=market,
                 edge=edge,
                 flagged=flagged,
@@ -305,7 +309,7 @@ def _build_live_response(
         home_team=fixture["home_name"],
         away_team=fixture["away_name"],
         probabilities=Probabilities(**probs),
-        model_version=model_v2.model_version(),
+        model_version=served.model_version(),
         state=live_state["state"],
         home_goals=live_state["home_goals"],
         away_goals=live_state["away_goals"],
@@ -322,7 +326,7 @@ def _predict_prematch(fixture_id: int) -> tuple[db.FixtureRow, dict[str, float]]
     if features is None:
         raise HTTPException(status_code=404, detail=f"fixture {fixture_id} not found")
 
-    return features.fixture, model_v2.predict_proba(features.v2_vector)
+    return features.fixture, served.predict_proba(features)
 
 
 if __name__ == "__main__":
