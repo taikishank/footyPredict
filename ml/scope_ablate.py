@@ -64,6 +64,7 @@ import pandas as pd
 import rating_ablate as ra
 import scope_lib
 import train_v2 as tv2
+import train_v3 as tv3
 from build_scope_features import OUT_PATH
 from feature_lib import FORM_FIELD_ORDER
 
@@ -105,7 +106,8 @@ def base_rate_losses(y_train: np.ndarray, y_val: np.ndarray) -> np.ndarray:
 
 
 def score_arm(df: pd.DataFrame, name: str, y: np.ndarray,
-              plan: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+              plan: list[tuple[np.ndarray, np.ndarray]],
+              params: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(per-fixture loss over every scored fixture, index of those fixtures).
 
     The fold boundaries are computed once on the whole table and then
@@ -125,7 +127,7 @@ def score_arm(df: pd.DataFrame, name: str, y: np.ndarray,
         tr = train_idx[eligible[train_idx]]
         va = val_idx[eligible[val_idx]]
         refused = val_idx[~eligible[val_idx]]
-        losses.append(ra.fit_and_score(df, cols, y, tr, va))
+        losses.append(ra.fit_and_score(df, cols, y, tr, va, params))
         index.append(va)
         if len(refused):
             losses.append(base_rate_losses(y[tr], y[refused]))
@@ -225,14 +227,22 @@ def coverage(df: pd.DataFrame, scored_index: np.ndarray) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("split", "rolling"), default="split")
+    parser.add_argument("--recipe", choices=sorted(tv3.RECIPES), default="v2",
+                        help="which fit to measure every arm at (default: v2, "
+                             "the recipe FINDINGS_SCOPE.md was written from)")
     args = parser.parse_args()
 
-    cache = OUT_PATH.parent / f"scope_losses_{args.mode}.npz"
+    params = tv3.RECIPES[args.recipe]
+    # A non-default recipe caches separately; reusing depth-4 losses under a
+    # depth-2 flag would produce a table that looks like a measurement.
+    suffix = "" if args.recipe == "v2" else f"_{args.recipe}"
+    cache = OUT_PATH.parent / f"scope_losses_{args.mode}{suffix}.npz"
     df = load()
     y = df["result"].map(tv2.LABEL_MAP).to_numpy()
     plan = ra.folds(len(df), args.mode)
     print(f"mode={args.mode}, {len(plan)} fold(s), "
-          f"{sum(len(v) for _, v in plan)} validation fixtures total\n")
+          f"{sum(len(v) for _, v in plan)} validation fixtures total")
+    print(f"recipe={args.recipe}: {params}\n")
 
     priced, scored_index = {}, None
     if cache.exists():
@@ -244,7 +254,7 @@ def main() -> None:
     for name in scope_lib.RECIPES:
         if name in priced:
             continue
-        losses, index = score_arm(df, name, y, plan)
+        losses, index = score_arm(df, name, y, plan, params)
         # Every arm scores every validation fixture once the refusals are
         # priced, so the indices are identical across arms by construction -
         # asserted rather than assumed, since the two tables below both

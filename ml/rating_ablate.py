@@ -99,24 +99,43 @@ def load() -> tuple[pd.DataFrame, list[str]]:
     return df, baseline
 
 
+#: The recipe every finding in this project was measured at, imported from
+#: train_v2 rather than restated so an ablation measures its columns and not a
+#: differently-tuned model - the exact confound train_v2.py's own docstring
+#: records having introduced against v1.
+#:
+#: It is a dict rather than six keyword arguments because it is no longer the
+#: only recipe. ml/tune.py --grid cap2 retuned v3's capacity and ml/train_v3.py
+#: carries the result (max_depth 2, reg_lambda 30), which is a different model
+#: from this one - so every number in FINDINGS_RATINGS.md onward is now a
+#: measurement *at depth 4*, and re-pricing one of them means passing a
+#: different `params` here rather than editing this constant.
+#:
+#: Note the direction: train_v3 imports this module, so this module must never
+#: import train_v3. A caller that wants v3's capacity passes train_v3.PARAMS in.
+V2_PARAMS = {
+    "n_estimators": tv2.N_ESTIMATORS,
+    "max_depth": tv2.MAX_DEPTH,
+    "learning_rate": tv2.LEARNING_RATE,
+    "reg_lambda": tv2.REG_LAMBDA,
+    "subsample": tv2.SUBSAMPLE,
+    "random_state": tv2.RANDOM_STATE,
+}
+
+
 def fit_and_score(df: pd.DataFrame, cols: list[str], y: np.ndarray,
-                  train_idx: np.ndarray, val_idx: np.ndarray) -> np.ndarray:
+                  train_idx: np.ndarray, val_idx: np.ndarray,
+                  params: dict | None = None) -> np.ndarray:
     """Per-fixture log loss on the validation slice.
 
-    Hyperparameters are imported from train_v2 rather than restated, so this
-    measures the rating columns and not a differently-tuned model - the exact
-    confound train_v2.py's own docstring records having introduced against v1.
+    `params` defaults to V2_PARAMS, so a caller that does not pass it gets the
+    fit every published finding was measured with and reproduces it exactly.
     """
     model = XGBClassifier(
         objective="multi:softprob",
         num_class=3,
-        n_estimators=tv2.N_ESTIMATORS,
-        max_depth=tv2.MAX_DEPTH,
-        learning_rate=tv2.LEARNING_RATE,
-        reg_lambda=tv2.REG_LAMBDA,
-        subsample=tv2.SUBSAMPLE,
-        random_state=tv2.RANDOM_STATE,
         eval_metric="mlogloss",
+        **(V2_PARAMS if params is None else params),
     )
     model.fit(df[cols].iloc[train_idx], y[train_idx])
     probs = model.predict_proba(df[cols].iloc[val_idx])

@@ -31,14 +31,25 @@ the arms are chosen to tell them apart:
                 not ask a tree to learn the combination from 19,797 rows.
 
 Machinery is rating_ablate.py's, imported rather than restated: same
-expanding-window folds, same train_v2 hyperparameters, same paired bootstrap.
-The cache holds probabilities rather than losses (FINDINGS_MARKET.md open item
-5), so the by-outcome table - the one that made this phase's hypothesis - is
-free.
+expanding-window folds, same paired bootstrap. The cache holds probabilities
+rather than losses (FINDINGS_MARKET.md open item 5), so the by-outcome table -
+the one that made this phase's hypothesis - is free.
+
+The fit is no longer fixed. --recipe selects between train_v2's constants, which
+is what every number in FINDINGS_GOALS.md was measured at and remains the
+default, and train_v3's retuned ones (train_v3.RECIPES).
+
+That is not housekeeping here, it is the phase's open question. The blend's
++0.00319 was measured against a depth-4 v3 that ml/cap_runoff.py has since shown
+to be over-fitting, and a log pool's fitted weight partly compensates for a weak
+first forecaster - so a better v3 should pull the weight down and the gain with
+it. Whether enough survives is what decides if v3 ships as the tree or as the
+blended forecaster.
 
 Run:
     ./inference-py/bin/python ml/goals_ablate.py --mode split
     ./inference-py/bin/python ml/goals_ablate.py --mode rolling
+    ./inference-py/bin/python ml/goals_ablate.py --mode rolling --recipe v3
 """
 from __future__ import annotations
 
@@ -50,6 +61,7 @@ import pandas as pd
 
 import rating_ablate as ra
 import train_v2 as tv2
+import train_v3 as tv3
 import venue_ablate as vabl
 from build_goals_features import FIELDS, OUT_PATH, arm_columns, arm_name
 from ratings_lib import ARMS
@@ -128,10 +140,19 @@ def main() -> None:
     parser.add_argument("--mode", choices=("split", "rolling"), default="split")
     parser.add_argument("--half-life", type=float, default=365.0)
     parser.add_argument("--cadence", type=float, default=30.0)
+    parser.add_argument("--recipe", choices=sorted(tv3.RECIPES), default="v2",
+                        help="which fit to measure every arm at (default: v2, "
+                             "the recipe FINDINGS_GOALS.md was written from)")
     args = parser.parse_args()
 
+    params = tv3.RECIPES[args.recipe]
     arm = arm_name(args.half_life, args.cadence)
-    cache = FEATURES_DIR / f"goals_probs_{args.mode}_{arm}.npz"
+    # The v2 cache keeps its original name so the published run is still a
+    # replay rather than a re-fit; a non-default recipe gets its own file,
+    # because silently reusing depth-4 probabilities under a depth-2 flag would
+    # produce a table that looks like a measurement and is not one.
+    suffix = "" if args.recipe == "v2" else f"_{args.recipe}"
+    cache = FEATURES_DIR / f"goals_probs_{args.mode}_{arm}{suffix}.npz"
 
     df, form_cols, goals_cols = load(args.half_life, args.cadence)
     y = df["result"].map(tv2.LABEL_MAP).to_numpy()
@@ -152,7 +173,8 @@ def main() -> None:
         "placebo": v3_cols + prob_cols,
     }
     print(f"mode={args.mode}, arm={arm}, {len(plan)} fold(s), "
-          f"{len(val_idx)} validation fixtures, {len(arms) + 1} arms\n")
+          f"{len(val_idx)} validation fixtures, {len(arms) + 1} arms")
+    print(f"recipe={args.recipe}: {params}\n")
 
     probs = {}
     if cache.exists():
@@ -169,7 +191,7 @@ def main() -> None:
             placebo_df = shuffled(df, prob_cols) if placebo_df is None else placebo_df
             source = placebo_df
         probs[name] = np.concatenate(
-            [vabl.fit_probs(source, cols, y, tr, va) for tr, va in plan])
+            [vabl.fit_probs(source, cols, y, tr, va, params) for tr, va in plan])
         print(f"  fitted {name:10s} ({len(cols)} cols)  "
               f"log loss {loss_of(probs[name], y_val).mean():.5f}")
 
@@ -181,10 +203,11 @@ def main() -> None:
         for train_idx, fold_val in plan:
             cut = int(len(train_idx) * (1.0 - BLEND_HOLDOUT))
             inner_train, inner_val = train_idx[:cut], train_idx[cut:]
-            inner_probs = vabl.fit_probs(df, v3_cols, y, inner_train, inner_val)
+            inner_probs = vabl.fit_probs(df, v3_cols, y, inner_train, inner_val,
+                                         params)
             weight = fit_blend_weight(inner_probs, dc_all[inner_val], y[inner_val])
             weights.append(weight)
-            fold_v3 = vabl.fit_probs(df, v3_cols, y, train_idx, fold_val)
+            fold_v3 = vabl.fit_probs(df, v3_cols, y, train_idx, fold_val, params)
             pooled.append(blend_probs(fold_v3, dc_all[fold_val], weight))
         probs["blend"] = np.concatenate(pooled)
         print(f"  fitted {'blend':10s} (weights per fold: "

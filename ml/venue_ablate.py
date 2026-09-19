@@ -44,6 +44,7 @@ from xgboost import XGBClassifier
 
 import rating_ablate as ra
 import train_v2 as tv2
+import train_v3 as tv3
 from build_venue_features import arm_columns
 from ratings_lib import ARMS
 from venue_lib import VENUE_ARMS
@@ -81,23 +82,20 @@ def arm_plan() -> dict[str, list[str]]:
 
 
 def fit_probs(df: pd.DataFrame, cols: list[str], y: np.ndarray,
-              train_idx: np.ndarray, val_idx: np.ndarray) -> np.ndarray:
+              train_idx: np.ndarray, val_idx: np.ndarray,
+              params: dict | None = None) -> np.ndarray:
     """Predicted probabilities on the validation slice.
 
     rating_ablate.fit_and_score's twin, returning the probabilities rather
-    than collapsing them to a loss - same model, same hyperparameters, and
-    the loss is recovered from these by loss_of() below.
+    than collapsing them to a loss - same model, same recipe, and the loss is
+    recovered from these by loss_of() below. `params` defaults to
+    rating_ablate.V2_PARAMS the same way, and for the same reason.
     """
     model = XGBClassifier(
         objective="multi:softprob",
         num_class=3,
-        n_estimators=tv2.N_ESTIMATORS,
-        max_depth=tv2.MAX_DEPTH,
-        learning_rate=tv2.LEARNING_RATE,
-        reg_lambda=tv2.REG_LAMBDA,
-        subsample=tv2.SUBSAMPLE,
-        random_state=tv2.RANDOM_STATE,
         eval_metric="mlogloss",
+        **(ra.V2_PARAMS if params is None else params),
     )
     model.fit(df[cols].iloc[train_idx], y[train_idx])
     return model.predict_proba(df[cols].iloc[val_idx])
@@ -140,9 +138,16 @@ def by_outcome(probs: dict[str, np.ndarray], y: np.ndarray,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("split", "rolling"), default="split")
+    parser.add_argument("--recipe", choices=sorted(tv3.RECIPES), default="v2",
+                        help="which fit to measure every arm at (default: v2, "
+                             "the recipe FINDINGS_VENUE.md was written from)")
     args = parser.parse_args()
 
-    cache = FEATURES_DIR / f"venue_probs_{args.mode}.npz"
+    params = tv3.RECIPES[args.recipe]
+    # A non-default recipe caches separately; reusing depth-4 probabilities
+    # under a depth-2 flag would produce a table that looks like a measurement.
+    suffix = "" if args.recipe == "v2" else f"_{args.recipe}"
+    cache = FEATURES_DIR / f"venue_probs_{args.mode}{suffix}.npz"
 
     df, form_cols = load()
     y = df["result"].map(tv2.LABEL_MAP).to_numpy()
@@ -151,7 +156,8 @@ def main() -> None:
     y_val = y[val_idx]
     arms = arm_plan()
     print(f"mode={args.mode}, {len(plan)} fold(s), {len(val_idx)} validation "
-          f"fixtures, {len(arms)} arms\n")
+          f"fixtures, {len(arms)} arms")
+    print(f"recipe={args.recipe}: {params}\n")
 
     probs = {}
     if cache.exists():
@@ -164,7 +170,7 @@ def main() -> None:
             continue
         cols = form_cols + rating_cols
         probs[name] = np.concatenate(
-            [fit_probs(df, cols, y, tr, va) for tr, va in plan])
+            [fit_probs(df, cols, y, tr, va, params) for tr, va in plan])
         print(f"  fitted {name:12s} ({len(cols)} cols)  "
               f"log loss {loss_of(probs[name], y_val).mean():.5f}")
     np.savez(cache, **probs)
