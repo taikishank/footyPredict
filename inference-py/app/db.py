@@ -143,11 +143,37 @@ def get_team_goal_volume(team_id: int, before: datetime, window: int) -> float:
         return float(sum(row[0] for row in cur.fetchall()))
 
 
+#: How recently a club must have played in a league to count as currently in
+#: it, for get_league_goal_volume_reference().
+#:
+#: Not a free parameter - it exists because "has ever played in this league"
+#: stopped meaning "is in this league" the moment the archive was backfilled
+#: (see the function's docstring), and it was swept rather than guessed.
+#: Measured as the mean absolute gap between the served column and the trained
+#: one, in units of that column's SD:
+#:
+#:     cutoff   in-season  preseason   min clubs in ref
+#:       60d      0.039      0.074        0   <- reference empties, column -> NaN
+#:       90d      0.039      0.065        0   <- same
+#:      120d      0.040      0.094       18
+#:      150d      0.048      0.125       18
+#:      250d      0.092      0.125       21
+#:     "ever"     0.630      0.669       38-46
+#:
+#: Below 120 days some league/date pairs have no qualifying club at all, and
+#: club_goals_relative() then returns None - the model gets a missing value
+#: instead of a slightly stale one, which is the worse failure. 150 is chosen
+#: over the nominally-better 120 for the reason train_v3.py picks MAX_DEPTH 2
+#: over depth 1: it is interior on the axis rather than one step from the
+#: cliff, and 0.008 SD does not buy that risk.
+LEAGUE_REFERENCE_RECENCY = "150 days"
+
+
 def get_league_goal_volume_reference(league_id: int, before: datetime, window: int) -> float | None:
     """The league's current cross-sectional mean of `get_team_goal_volume`
-    across the teams that have played in it before `before` - the serving-time
-    stand-in for feature_lib.LeagueRollingMean's rolling-200-historical-value
-    reference used at training time.
+    across the clubs currently in it - the serving-time stand-in for
+    feature_lib.LeagueRollingMean's rolling-200-historical-value reference
+    used at training time.
 
     The two aren't the same computation, and that's fine here specifically:
     LeagueRollingMean exists to strip out an archive-density trend that only
@@ -155,18 +181,40 @@ def get_league_goal_volume_reference(league_id: int, before: datetime, window: i
     ever asks about "now", where every team's own recent matches are already
     fully populated, so a live average across the league's current teams needs
     no such correction and is far cheaper than replaying the historical walk
-    on every request."""
+    on every request.
+
+    "Currently in it" is LEAGUE_REFERENCE_RECENCY, and used to be implicit.
+    This filtered on nothing but `starting_at < before`, which selected every
+    club that had *ever* appeared in the league. That was correct for as long
+    as `fixtures` held a rolling window of live results - one season, where
+    "ever" and "now" are the same 20 clubs - and it silently stopped being
+    correct when the 26-season archive was loaded (see
+    scripts/backfill_fixtures.py). The set became 38-46 clubs per league,
+    most of them relegated years ago and carrying a goal volume from whenever
+    they last played, and the served column drifted 0.63 SD from the trained
+    one. The bound restores the intent the docstring always claimed.
+
+    Note what the training side is, because it explains why a *short* bound
+    wins: LeagueRollingMean.WINDOW is 200 observations, two per fixture, so
+    roughly 100 club-fixtures - about ten rounds, or two to three months of
+    league time. A recency bound on club membership is a different mechanism,
+    but a tight one lands on nearly the same set of clubs, which is why the
+    agreement improves monotonically as the bound shortens until the point
+    where it starts excluding clubs that really are playing.
+    """
     with pool.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
             WITH teams_in_league AS (
-                SELECT DISTINCT team_id FROM (
-                    SELECT home_id AS team_id FROM fixtures
+                SELECT team_id FROM (
+                    SELECT home_id AS team_id, starting_at FROM fixtures
                     WHERE league_id = %(league_id)s AND starting_at < %(before)s
-                    UNION
-                    SELECT away_id AS team_id FROM fixtures
+                    UNION ALL
+                    SELECT away_id AS team_id, starting_at FROM fixtures
                     WHERE league_id = %(league_id)s AND starting_at < %(before)s
                 ) t
+                GROUP BY team_id
+                HAVING max(starting_at) >= %(before)s - %(recency)s::interval
             ),
             ranked AS (
                 SELECT
@@ -190,7 +238,8 @@ def get_league_goal_volume_reference(league_id: int, before: datetime, window: i
             )
             SELECT AVG(volume) FROM team_volumes
             """,
-            {"league_id": league_id, "before": before, "window": window},
+            {"league_id": league_id, "before": before, "window": window,
+             "recency": LEAGUE_REFERENCE_RECENCY},
         )
         row = cur.fetchone()
         return float(row[0]) if row and row[0] is not None else None
@@ -297,3 +346,45 @@ def insert_edge(
                 model_version,
             ),
         )
+
+
+class ResultRow(TypedDict):
+    league_id: int
+    starting_at: datetime
+    home_id: int
+    away_id: int
+    home_goals: int
+    away_goals: int
+
+
+def get_results_index() -> list[ResultRow]:
+    """Every completed fixture in date order - the input to the rating replay.
+
+    This is the serving twin of ml/data/features/results_index.parquet, and it
+    is a whole-archive read rather than a windowed one because a rating is a
+    running summary with no finite lookback: ratings_lib.AttackDefence's state
+    after fixture N depends on all N-1 before it. Replaying ~40k rows costs
+    0.4s (see app/ratings_state.py for why that number decides the design), so
+    the alternative - persisting rating state and mutating it as results land -
+    would buy a fraction of a second of startup in exchange for a second
+    implementation of the update rule and drift nobody could detect.
+
+    Not filtered by league. The archive ratings were fitted on is five
+    disconnected leagues (ml/build_rating_features.py), and ratings_lib keeps
+    every mean, baseline and regression target per-league, so a sixth league
+    appearing in Postgres gets its own independent pool rather than
+    contaminating the five.
+    """
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT league_id, starting_at, home_id, away_id, home_goals, away_goals
+            FROM fixtures
+            WHERE home_goals IS NOT NULL AND away_goals IS NOT NULL
+            ORDER BY starting_at ASC, fixture_id ASC
+            """
+        )
+        rows = cur.fetchall()
+
+    keys = ("league_id", "starting_at", "home_id", "away_id", "home_goals", "away_goals")
+    return [dict(zip(keys, row)) for row in rows]  # type: ignore[return-value]
