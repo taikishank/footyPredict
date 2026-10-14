@@ -16,15 +16,17 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, model_comparison, ratings_state, served
+from app import db, model_btts, model_comparison, ratings_state, served
 from app.config import (
     CORS_ALLOWED_ORIGINS,
     EDGE_FLAG_THRESHOLD,
+    SERVED_BTTS_MODEL_VERSION,
     SERVED_MODEL_VERSION,
 )
 from app.features import NotEnoughHistoryError, build_match_features
 from app.live_prob import adjust_for_live_state
 from app.schemas import (
+    BTTSProbabilities,
     HealthResponse,
     ModelComparisonResponse,
     ModelPerformance,
@@ -56,6 +58,10 @@ async def lifespan(app: FastAPI):
     # up without it would either serve nothing or silently fall back to a model
     # nobody is grading. See app/served.py.
     served.load()
+    # Best-effort, not fatal: see app/model_btts.py's docstring for why BTTS
+    # is a second, optional prediction rather than a candidate for
+    # SERVED_MODEL_VERSION's slot.
+    model_btts.load_model()
     yield
     db.pool.close()
 
@@ -76,6 +82,7 @@ def health() -> HealthResponse:
         status="ok" if served.is_loaded() else "model not loaded",
         model_version=served.model_version() if served.is_loaded() else None,
         ratings=ratings_state.state_summary() if ratings_state.is_loaded() else None,
+        btts_model_loaded=model_btts.is_loaded(),
     )
 
 
@@ -139,6 +146,19 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
         model_probs = served.predict_proba(features)
         market, edge, flagged = _market_and_edge(features.fixture["fixture_id"], model_probs)
 
+        # BTTS rides on v3's own feature vector (app/model_btts.py's
+        # docstring), so it needs no NotEnoughHistoryError handling of its
+        # own - a fixture that reached here already has one. It is still
+        # skipped when the vector is None (SERVED_MODEL_VERSION != "v3", so
+        # ratings_state was never replayed) or the BTTS model never loaded.
+        btts_probs = btts_market = btts_edge = None
+        btts_flagged = False
+        if model_btts.is_loaded() and features.v3_vector is not None:
+            btts_probs = model_btts.predict_proba(features.v3_vector)
+            btts_market, btts_edge, btts_flagged = _btts_market_and_edge(
+                features.fixture["fixture_id"], btts_probs
+            )
+
         # probabilities_v2/model_version_v2 predate v2 becoming the serving
         # path and just mirror `probabilities`. They follow the *served* model
         # rather than model_v2 specifically: the frontend reads these fields as
@@ -162,6 +182,12 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
                 flagged=flagged,
                 probabilities_v2=probs_v2,
                 model_version_v2=version_v2,
+                btts_probabilities=(
+                    BTTSProbabilities(**btts_probs) if btts_probs is not None else None
+                ),
+                btts_market=btts_market,
+                btts_edge=btts_edge,
+                btts_flagged=btts_flagged,
             )
         )
 
@@ -261,6 +287,43 @@ def _market_and_edge(
     )
 
     return Probabilities(**market_probs), Probabilities(**edge_probs), flagged
+
+
+def _btts_market_and_edge(
+    fixture_id: int, model_probs: dict
+) -> tuple[BTTSProbabilities | None, BTTSProbabilities | None, bool]:
+    """_market_and_edge's BTTS sibling: two outcomes instead of three, and
+    the odds row's btts_* columns can be None (no quote on the last poll)
+    even when the h2h ones are present, so that is checked independently of
+    whether db.get_odds() returned a row at all."""
+    odds_row = db.get_odds(fixture_id)
+    if odds_row is None or odds_row["implied_btts_yes"] is None:
+        return None, None, False
+
+    market_probs = {
+        "yes": odds_row["implied_btts_yes"],
+        "no": odds_row["implied_btts_no"],
+    }
+    edge_probs = {
+        outcome: model_probs[outcome] - market_probs[outcome] for outcome in model_probs
+    }
+    flagged = max(abs(v) for v in edge_probs.values()) >= EDGE_FLAG_THRESHOLD
+    prices = {
+        "yes": odds_row["btts_yes_price"],
+        "no": odds_row["btts_no_price"],
+    }
+
+    db.insert_btts_edge(
+        fixture_id,
+        model_probs["yes"], model_probs["no"],
+        market_probs["yes"], market_probs["no"],
+        edge_probs["yes"], edge_probs["no"],
+        flagged,
+        prices["yes"], prices["no"],
+        SERVED_BTTS_MODEL_VERSION,
+    )
+
+    return BTTSProbabilities(**market_probs), BTTSProbabilities(**edge_probs), flagged
 
 
 @app.websocket("/ws/predictions/{fixture_id}/live")

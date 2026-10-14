@@ -166,6 +166,21 @@ def outcome_probs(lam, mu, rho: float = 0.0) -> np.ndarray:
     return np.stack([home, draw, away], axis=1)
 
 
+def btts_prob(lam, mu, rho: float = 0.0) -> np.ndarray:
+    """(n,) of P(both teams score), read off the same matrix as outcome_probs.
+
+    "Neither scores" is P(home=0) + P(away=0) - P(home=0, away=0), the
+    inclusion-exclusion correction for the cell double-counted by both
+    marginals. BTTS is everything else - no new fit, no new parameter, the
+    same geometry outcome_probs already pays for.
+    """
+    matrix = score_matrix(lam, mu, rho)
+    p_home_blank = matrix[:, 0, :].sum(axis=1)
+    p_away_blank = matrix[:, :, 0].sum(axis=1)
+    p_either_blank = p_home_blank + p_away_blank - matrix[:, 0, 0]
+    return 1.0 - p_either_blank
+
+
 @dataclass
 class LeagueParams:
     """One league's fitted state, as of some date.

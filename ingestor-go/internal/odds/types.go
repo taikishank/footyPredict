@@ -19,7 +19,7 @@ var leagueSportKeys = map[int64]string{
 }
 
 // Event is a single fixture's odds as returned by The Odds API's
-// /v4/sports/{sport}/odds endpoint (regions=eu, markets=h2h).
+// /v4/sports/{sport}/odds endpoint (regions=eu, markets=h2h,btts).
 type Event struct {
 	ID           string      `json:"id"`
 	SportKey     string      `json:"sport_key"`
@@ -40,7 +40,7 @@ type Market struct {
 }
 
 // Outcome.Name is either a team name (matching Event.HomeTeam/AwayTeam
-// verbatim) or "Draw" for the h2h market.
+// verbatim) or "Draw" for the h2h market, and "Yes"/"No" for the btts market.
 type Outcome struct {
 	Name  string  `json:"name"`
 	Price float64 `json:"price"`

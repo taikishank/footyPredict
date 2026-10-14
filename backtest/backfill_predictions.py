@@ -79,7 +79,7 @@ sys.path.insert(0, str(_REPO / "inference-py"))
 
 load_dotenv(find_dotenv(usecwd=True))
 
-from app import db, model_v2, model_v3, ratings_state  # noqa: E402
+from app import db, model_btts, model_v2, model_v3, ratings_state  # noqa: E402
 from app.config import EDGE_FLAG_THRESHOLD, SERVED_MODEL_VERSION  # noqa: E402
 from app.features import NotEnoughHistoryError, build_match_features  # noqa: E402
 
@@ -89,11 +89,21 @@ POSTGRES_URL = os.environ["POSTGRES_URL"]
 DEFAULT_MODEL = SERVED_MODEL_VERSION
 
 #: model -> (loader module, the MatchFeatures attribute its vector starts from,
-#: whether it needs point-in-time rating columns appended).
+#: whether it needs point-in-time rating columns appended). "btts" eats the
+#: identical vector v3 does - ml/train_btts.py's load() is v3's load() with a
+#: different label, not a different column set - so it reuses v3's "needs
+#: ratings, start from v2_vector" row rather than a column set of its own.
 _MODELS = {
     "v2": (model_v2, "v2_vector", False),
     "v3": (model_v3, "v2_vector", True),
+    "btts": (model_btts, "v2_vector", True),
 }
+
+#: Which market a model's reconstructed snapshot belongs in - "1x2" models
+#: write edges/prediction_calls' shape, "btts" writes edges_btts/btts_calls'.
+#: Not folded into _MODELS because it is the dispatch key for the table-shaped
+#: code below, not a property of how the vector is built.
+_MARKET = {"v2": "1x2", "v3": "1x2", "btts": "btts"}
 
 _TRAINING_FEATURES = _REPO / "ml" / "data" / "features" / "2000_window3_8.csv"
 _TRAINING_RATINGS = _REPO / "ml" / "data" / "features" / "ratings.csv"
@@ -172,33 +182,53 @@ def _seen_in_training(kickoff, cutoff) -> bool:
     return kickoff.replace(tzinfo=None) <= cutoff
 
 
-def fixtures_to_backfill(conn: psycopg.Connection, hours: int, model_version: str):
+def fixtures_to_backfill(conn: psycopg.Connection, hours: int, model_version: str,
+                         market: str = "1x2"):
     """Kicked-off fixtures in the window that have odds and no snapshot for
     this model version yet. Ordered oldest-first so a partial run is a clean
-    prefix of a full one."""
+    prefix of a full one.
+
+    `market` picks both which odds columns are read and which table the
+    "no snapshot yet" check runs against - a fixture missing only its btts
+    snapshot (but already holding a 1x2 one for the same tag) must still be
+    eligible for a `--model btts` run, so the two markets' dedup cannot share
+    one EXISTS clause against `edges`.
+    """
+    if market == "btts":
+        odds_cols = "o.implied_btts_yes, o.implied_btts_no, o.btts_yes_price, o.btts_no_price"
+        snapshot_table = "edges_btts"
+        keys = (
+            "fixture_id", "starting_at", "fetched_at",
+            "implied_btts_yes", "implied_btts_no", "btts_yes_price", "btts_no_price",
+        )
+        odds_filter = "o.implied_btts_yes IS NOT NULL"
+    else:
+        odds_cols = "o.implied_home, o.implied_draw, o.implied_away, o.home_price, o.draw_price, o.away_price"
+        snapshot_table = "edges"
+        keys = (
+            "fixture_id", "starting_at", "fetched_at",
+            "implied_home", "implied_draw", "implied_away",
+            "home_price", "draw_price", "away_price",
+        )
+        odds_filter = "true"
+
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT f.fixture_id, f.starting_at, o.fetched_at,
-                   o.implied_home, o.implied_draw, o.implied_away,
-                   o.home_price, o.draw_price, o.away_price
+            f"""
+            SELECT f.fixture_id, f.starting_at, o.fetched_at, {odds_cols}
             FROM fixtures f
             JOIN odds o USING (fixture_id)
             WHERE f.starting_at >= now() - make_interval(hours => %s)
               AND f.starting_at < now()
               AND o.fetched_at < f.starting_at
+              AND {odds_filter}
               AND NOT EXISTS (
-                  SELECT 1 FROM edges e
+                  SELECT 1 FROM {snapshot_table} e
                   WHERE e.fixture_id = f.fixture_id AND e.model_version = %s
               )
             ORDER BY f.starting_at
             """,
             (hours, model_version),
-        )
-        keys = (
-            "fixture_id", "starting_at", "fetched_at",
-            "implied_home", "implied_draw", "implied_away",
-            "home_price", "draw_price", "away_price",
         )
         return [dict(zip(keys, row)) for row in cur.fetchall()]
 
@@ -246,6 +276,43 @@ def insert_backfilled_edge(
         return cur.rowcount > 0
 
 
+def insert_backfilled_btts_edge(
+    conn: psycopg.Connection, row: dict, model_probs: dict, model_version: str
+) -> bool:
+    """insert_backfilled_edge's BTTS sibling - edges_btts' PK already
+    includes model_version (it never went through edges' two migrations,
+    see ingestor-go/internal/store/postgres.go), so the collision this
+    guards against in edges cannot happen here. The ON CONFLICT DO NOTHING
+    is kept anyway, for a re-run over the same window."""
+    market = {
+        "yes": float(row["implied_btts_yes"]),
+        "no": float(row["implied_btts_no"]),
+    }
+    edge = {o: model_probs[o] - market[o] for o in market}
+    flagged = max(abs(v) for v in edge.values()) >= EDGE_FLAG_THRESHOLD
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO edges_btts (
+                fixture_id, computed_at, model_yes, model_no,
+                market_yes, market_no, edge_yes, edge_no, flagged,
+                yes_price, no_price, model_version
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (fixture_id, computed_at, model_version) DO NOTHING
+            """,
+            (
+                row["fixture_id"], row["fetched_at"],
+                model_probs["yes"], model_probs["no"],
+                market["yes"], market["no"],
+                edge["yes"], edge["no"], flagged,
+                row["btts_yes_price"], row["btts_no_price"],
+                model_version,
+            ),
+        )
+        return cur.rowcount > 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Reconstruct model snapshots for already-played fixtures.",
@@ -270,6 +337,7 @@ def main() -> None:
     args = parser.parse_args()
 
     module, vector_attr, needs_ratings = _MODELS[args.model]
+    market = _MARKET[args.model]
     tag = args.model_version or f"{args.model}-backfill"
 
     cutoff = training_data_end(args.model)
@@ -278,10 +346,17 @@ def main() -> None:
 
     db.pool.open()
     module.load_model()
+    if market == "btts" and not module.is_loaded():
+        # model_btts.load_model() is best-effort (app/model_btts.py), unlike
+        # model_v2/model_v3's - a CLI backfill run wants a loud failure, not
+        # a silent no-op over every eligible fixture.
+        print("btts model failed to load - run ml/train_btts.py first",
+              file=sys.stderr)
+        sys.exit(1)
     written = skipped_seen = skipped_history = skipped_rating = collided = 0
     try:
         with psycopg.connect(POSTGRES_URL) as conn:
-            rows = fixtures_to_backfill(conn, args.hours, tag)
+            rows = fixtures_to_backfill(conn, args.hours, tag, market)
             print(f"{len(rows)} fixture(s) in window with odds and no {tag} snapshot",
                   file=sys.stderr)
 
@@ -326,7 +401,8 @@ def main() -> None:
                 if args.dry_run:
                     written += 1
                     continue
-                if insert_backfilled_edge(conn, row, probs, tag):
+                insert = insert_backfilled_btts_edge if market == "btts" else insert_backfilled_edge
+                if insert(conn, row, probs, tag):
                     written += 1
                 else:
                     collided += 1
@@ -342,9 +418,11 @@ def main() -> None:
         f"skipped {skipped_seen} inside training data, "
         f"{skipped_history} without enough history"
         + (f", {skipped_rating} without a replayed rating row" if skipped_rating else "")
+        + (f"; {collided} DROPPED - a prior run already wrote that "
+           f"(fixture_id, computed_at, model_version)" if collided and market == "btts" else "")
         + (f"; {collided} DROPPED - another model already holds that "
            f"(fixture_id, computed_at); edges' primary key does not include "
-           f"model_version" if collided else ""),
+           f"model_version" if collided and market != "btts" else ""),
         file=sys.stderr,
     )
 

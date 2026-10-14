@@ -99,7 +99,7 @@ POSTGRES_URL = os.environ["POSTGRES_URL"]
 # report.py rather than restated here: this file and that one used to declare
 # the same os.environ.get with the same hand-copied fallback, and a promotion
 # moves a literal that appears twice exactly once.
-from report import DEFAULT_MODEL_VERSION  # noqa: E402
+from report import DEFAULT_BTTS_MODEL_VERSION, DEFAULT_MODEL_VERSION  # noqa: E402
 
 import selection  # noqa: E402
 
@@ -116,6 +116,13 @@ _PRICE_COL = {"home_win": "home_price", "draw": "draw_price", "away_win": "away_
 # Double-chance label for the bet that excludes a given singleton outcome
 # (e.g. excluding away_win leaves home-or-draw, i.e. "1X").
 _DC_LABEL = {"away_win": "1X", "home_win": "X2", "draw": "12"}
+
+# btts_calls' column maps - edges_btts' shape (two outcomes), not a slice of
+# the 1x2 maps above.
+_BTTS_EDGE_COL = {"yes": "edge_yes", "no": "edge_no"}
+_BTTS_MODEL_COL = {"yes": "model_yes", "no": "model_no"}
+_BTTS_MARKET_COL = {"yes": "market_yes", "no": "market_no"}
+_BTTS_PRICE_COL = {"yes": "yes_price", "no": "no_price"}
 
 
 def find_ungraded_finished_fixtures(
@@ -203,6 +210,145 @@ def ever_flagged(
             (fixture_id, starting_at, model_version),
         )
         return bool(cur.fetchone()[0])
+
+
+def find_ungraded_finished_btts_fixtures(
+    conn: psycopg.Connection, model_version: str, call_rule: str
+) -> list[int]:
+    """find_ungraded_finished_fixtures's BTTS sibling - gated on home_goals/
+    away_goals rather than the categorical `result`, since that is what
+    actual_btts is read off, and against edges_btts/btts_calls rather than
+    edges/prediction_calls."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT f.fixture_id
+            FROM fixtures f
+            WHERE f.home_goals IS NOT NULL AND f.away_goals IS NOT NULL
+              AND f.starting_at < now() - %s
+              AND EXISTS (
+                  SELECT 1 FROM edges_btts e
+                  WHERE e.fixture_id = f.fixture_id
+                    AND e.model_version = %s
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM btts_calls bc
+                  WHERE bc.fixture_id = f.fixture_id
+                    AND bc.model_version = %s
+                    AND bc.call_rule = %s
+              )
+            """,
+            (_GRADE_AFTER, model_version, model_version, call_rule),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def latest_btts_edge(
+    conn: psycopg.Connection, fixture_id: int, starting_at, model_version: str
+) -> dict | None:
+    """latest_edge's BTTS sibling, reading edges_btts instead of edges."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT computed_at, model_yes, model_no, market_yes, market_no,
+                   edge_yes, edge_no, yes_price, no_price, flagged
+            FROM edges_btts
+            WHERE fixture_id = %s AND computed_at < %s AND model_version = %s
+            ORDER BY computed_at DESC
+            LIMIT 1
+            """,
+            (fixture_id, starting_at, model_version),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        keys = (
+            "computed_at", "model_yes", "model_no", "market_yes", "market_no",
+            "edge_yes", "edge_no", "yes_price", "no_price", "flagged",
+        )
+        return dict(zip(keys, row))
+
+
+def btts_ever_flagged(
+    conn: psycopg.Connection, fixture_id: int, starting_at, model_version: str
+) -> bool:
+    """ever_flagged's BTTS sibling."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM edges_btts
+                WHERE fixture_id = %s AND computed_at < %s AND flagged = true
+                  AND model_version = %s
+            )
+            """,
+            (fixture_id, starting_at, model_version),
+        )
+        return bool(cur.fetchone()[0])
+
+
+def grade_btts_fixture(
+    conn: psycopg.Connection, fixture_id: int, model_version: str, call_rule: str
+) -> bool:
+    """grade_fixture's BTTS sibling: one table, two outcomes, no DC arm - BTTS
+    is already binary, so there is nothing for a double-chance bet to do."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT starting_at, home_goals, away_goals FROM fixtures WHERE fixture_id = %s",
+            (fixture_id,),
+        )
+        starting_at, home_goals, away_goals = cur.fetchone()
+    actual_result = "yes" if (home_goals > 0 and away_goals > 0) else "no"
+
+    call = latest_btts_edge(conn, fixture_id, starting_at, model_version)
+    if call is None:
+        return False  # this model never priced this fixture before kickoff
+
+    was_flagged = bool(call["flagged"])
+    was_ever_flagged = was_flagged or btts_ever_flagged(
+        conn, fixture_id, starting_at, model_version
+    )
+
+    model_probs = {o: float(call[_BTTS_MODEL_COL[o]]) for o in selection.BTTS_OUTCOMES}
+    market_probs = {o: float(call[_BTTS_MARKET_COL[o]]) for o in selection.BTTS_OUTCOMES}
+
+    call_side = selection.BTTS[call_rule](model_probs, market_probs)
+    model_prob = model_probs[call_side]
+    market_prob = market_probs[call_side]
+    edge = float(call[_BTTS_EDGE_COL[call_side]])
+    price = call[_BTTS_PRICE_COL[call_side]]
+    price = float(price) if price is not None else None
+
+    correct = call_side == actual_result
+    brier_score = (model_probs["yes"] - (1.0 if actual_result == "yes" else 0.0)) ** 2 * 2
+    market_brier_score = (
+        (market_probs["yes"] - (1.0 if actual_result == "yes" else 0.0)) ** 2 * 2
+    )
+
+    staked_units = 1.0
+    pnl_units = None
+    if price is not None:
+        pnl_units = ((price - 1.0) if correct else -1.0) * staked_units
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO btts_calls (
+                fixture_id, edge_computed_at, call_rule, call_side, model_prob,
+                market_prob, edge, price, actual_btts, correct, brier_score,
+                market_brier_score, staked_units, pnl_units, flagged,
+                ever_flagged, model_version
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (fixture_id, model_version, call_rule) DO NOTHING
+            """,
+            (
+                fixture_id, call["computed_at"], call_rule, call_side, model_prob,
+                market_prob, edge, price, actual_result == "yes", correct, brier_score,
+                market_brier_score, staked_units, pnl_units, was_flagged,
+                was_ever_flagged, model_version,
+            ),
+        )
+    return True
 
 
 def _dc_price(dc_market_prob: float, call: dict) -> float | None:
@@ -357,9 +503,18 @@ def main() -> None:
         description="Grade finished fixtures against one model version's predictions.",
     )
     parser.add_argument(
+        "--market",
+        choices=("1x2", "btts"),
+        default="1x2",
+        help="which market to grade (default: 1x2). btts writes btts_calls "
+        "only - there is no double-chance sibling for an already-binary market.",
+    )
+    parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL_VERSION,
-        help=f"edges.model_version to grade (default: {DEFAULT_MODEL_VERSION})",
+        default=None,
+        help="edges(_btts).model_version to grade (default: "
+        f"{DEFAULT_MODEL_VERSION} for --market 1x2, {DEFAULT_BTTS_MODEL_VERSION} "
+        "for --market btts)",
     )
     parser.add_argument(
         "--rule",
@@ -372,6 +527,14 @@ def main() -> None:
     args = parser.parse_args()
 
     rules = args.rule or list(selection.RULES)
+    model = args.model or (
+        DEFAULT_BTTS_MODEL_VERSION if args.market == "btts" else DEFAULT_MODEL_VERSION
+    )
+    find_ungraded, grade = (
+        (find_ungraded_finished_btts_fixtures, grade_btts_fixture)
+        if args.market == "btts"
+        else (find_ungraded_finished_fixtures, grade_fixture)
+    )
 
     with psycopg.connect(POSTGRES_URL) as conn:
         for call_rule in rules:
@@ -379,17 +542,14 @@ def main() -> None:
             skipped = 0
             # Re-queried per rule: a fixture graded under max_edge is still
             # ungraded under max_prob, so the two arms have different backlogs.
-            for fixture_id in find_ungraded_finished_fixtures(
-                conn, args.model, call_rule
-            ):
-                if grade_fixture(conn, fixture_id, args.model, call_rule):
+            for fixture_id in find_ungraded(conn, model, call_rule):
+                if grade(conn, fixture_id, model, call_rule):
                     graded += 1
                 else:
                     skipped += 1
             print(
-                f"[{args.model}/{call_rule}] graded {graded} prediction(s); "
-                f"{skipped} finished fixture(s) had no pre-kickoff "
-                f"{args.model} snapshot",
+                f"[{args.market}/{model}/{call_rule}] graded {graded} prediction(s); "
+                f"{skipped} finished fixture(s) had no pre-kickoff {model} snapshot",
                 file=sys.stderr,
             )
         conn.commit()

@@ -58,6 +58,18 @@ MODEL_V3_LOCAL_PATH = Path(
     )
 )
 
+# Matches ml/train_btts.py: v3's own 63 columns, retargeted at the BTTS label
+# rather than 1X2. A fourth key, not a variant of v3's - different task, same
+# recipe - so it coexists with whichever of v1/v2/v3 SERVED_MODEL_VERSION
+# names rather than ever being a candidate for that slot.
+MODEL_BTTS_S3_KEY = os.environ.get("MODEL_BTTS_S3_KEY", "2000_btts_v1/model.json")
+MODEL_BTTS_LOCAL_PATH = Path(
+    os.environ.get(
+        "MODEL_BTTS_LOCAL_PATH",
+        Path(__file__).resolve().parents[2] / "ml" / "models" / "btts_model_v1.json",
+    )
+)
+
 # How long a replayed rating state may serve before app/ratings_state.py
 # rebuilds it. The replay costs ~0.4s over the whole archive, so this trades a
 # rare half-second hiccup on one request against how stale a rating may get;
@@ -92,6 +104,15 @@ RATINGS_REFRESH_SECONDS = float(os.environ.get("RATINGS_REFRESH_SECONDS", "3600"
 # archive. scripts/verify_archive_read.py is the gate that says so and exits
 # non-zero when it stops being true.
 SERVED_MODEL_VERSION = os.environ.get("SERVED_MODEL_VERSION", "v3")
+
+# BTTS's own coarse tag, written to edges_btts.model_version - app/model_btts.py's
+# model_version() returns an mtime-based fingerprint (so is_loaded() can tell
+# two artifacts apart), but that is the wrong thing to key a backtest record
+# on for the same reason SERVED_MODEL_VERSION is coarse rather than
+# model_v3.model_version(): a retrain should not start a new bucket, and
+# backtest/grade_calls.py's --model default has to be something an operator
+# can type without looking up a timestamp first.
+SERVED_BTTS_MODEL_VERSION = os.environ.get("SERVED_BTTS_MODEL_VERSION", "btts-v1")
 
 # Angular dev server origins allowed to call this API cross-origin (see
 # app.ts's `ng serve` / environment.ts's apiBaseUrl). Comma-separated;

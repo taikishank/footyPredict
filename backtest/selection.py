@@ -92,11 +92,33 @@ DOUBLE_CHANCE: dict[str, Callable[[Probs, Probs], str]] = {
     "max_prob": _dc_exclude_max_prob,
 }
 
+BTTS_OUTCOMES = ("yes", "no")
+
+
+def _max_edge_btts(model: Probs, market: Probs) -> str:
+    """BTTS's own max_edge, over ("yes", "no") rather than OUTCOMES - a
+    native two-outcome pick, not DOUBLE_CHANCE's "exclude one of three"
+    shape forced down to two. Same max-signed-edge argument as _max_edge:
+    the two edges sum to 0, so this never refuses either."""
+    return max(BTTS_OUTCOMES, key=lambda o: model[o] - market[o])
+
+
+def _max_prob_btts(model: Probs, market: Probs) -> str:
+    """BTTS's own belief arm, market ignored - _max_prob's twin."""
+    return max(BTTS_OUTCOMES, key=lambda o: model[o])
+
+
+#: rule name -> picks the side ("yes" or "no") to back on the BTTS market.
+BTTS: dict[str, Callable[[Probs, Probs], str]] = {
+    "max_edge": _max_edge_btts,
+    "max_prob": _max_prob_btts,
+}
+
 #: Every rule, in the order reports should show them - the incumbent first so
 #: a diff against it reads as "what changed", not "what is this".
 RULES = ("max_edge", "max_prob")
 
-assert set(RULES) == set(SINGLE) == set(DOUBLE_CHANCE), (
-    "every rule needs both a singles and a double-chance selector - a rule "
-    "present in only one would grade half a fixture and silently skip the rest"
+assert set(RULES) == set(SINGLE) == set(DOUBLE_CHANCE) == set(BTTS), (
+    "every rule needs a selector on every market - a rule present on only "
+    "some would grade part of a fixture and silently skip the rest"
 )

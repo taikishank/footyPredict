@@ -120,6 +120,10 @@ import selection
 
 DEFAULT_MODEL_VERSION = os.environ.get("SERVED_MODEL_VERSION", "v3")
 
+# Mirrors inference-py/app/config.py's SERVED_BTTS_MODEL_VERSION, hand-copied
+# for the same reason DEFAULT_MODEL_VERSION is.
+DEFAULT_BTTS_MODEL_VERSION = os.environ.get("SERVED_BTTS_MODEL_VERSION", "btts-v1")
+
 # Mirrors inference-py/app/config.py's EDGE_FLAG_THRESHOLD, and hand-copied
 # for the same reason DEFAULT_MODEL_VERSION is: app/config.py demands
 # DynamoDB configuration at import time and a report has no business needing

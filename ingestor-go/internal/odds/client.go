@@ -25,9 +25,11 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
-// FetchOdds returns every upcoming event The Odds API has h2h prices for in
-// the given sport, from eu bookmakers. The free tier is metered per call, so
-// callers should poll infrequently (see config.OddsPollInterval).
+// FetchOdds returns every upcoming event The Odds API has h2h and btts
+// prices for in the given sport, from eu bookmakers. Both markets come back
+// on one call - The Odds API accepts a comma-separated markets list - so
+// adding btts cost nothing against the free tier's per-call metering (see
+// config.OddsPollInterval).
 func (c *Client) FetchOdds(ctx context.Context, sportKey string) ([]Event, error) {
 	url := fmt.Sprintf("%s/sports/%s/odds", c.baseURL, sportKey)
 
@@ -38,7 +40,7 @@ func (c *Client) FetchOdds(ctx context.Context, sportKey string) ([]Event, error
 	q := req.URL.Query()
 	q.Set("apiKey", c.apiKey)
 	q.Set("regions", "eu")
-	q.Set("markets", "h2h")
+	q.Set("markets", "h2h,btts")
 	q.Set("oddsFormat", "decimal")
 	req.URL.RawQuery = q.Encode()
 

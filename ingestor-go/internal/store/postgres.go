@@ -60,6 +60,16 @@ CREATE TABLE IF NOT EXISTS odds (
 	fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- btts is a second, independent market on the same fixture (PROJECT_SPEC.md's
+-- BTTS phase), added as columns on the same latest-only snapshot rather than
+-- a second table: one row per fixture either way, and a fixture can have h2h
+-- without btts (or vice versa) on a given poll, hence all nullable.
+ALTER TABLE odds ADD COLUMN IF NOT EXISTS btts_bookmaker_count INT;
+ALTER TABLE odds ADD COLUMN IF NOT EXISTS btts_yes_price NUMERIC;
+ALTER TABLE odds ADD COLUMN IF NOT EXISTS btts_no_price NUMERIC;
+ALTER TABLE odds ADD COLUMN IF NOT EXISTS implied_btts_yes NUMERIC;
+ALTER TABLE odds ADD COLUMN IF NOT EXISTS implied_btts_no NUMERIC;
+
 -- edges is append-only, unlike odds/live_match_state: inference-py inserts a
 -- row each time it serves /fixtures/upcoming for a fixture with an odds
 -- match, so Phase 6's backtest module has real history to grade against
@@ -277,6 +287,58 @@ BEGIN
 		ALTER TABLE double_chance_calls ADD PRIMARY KEY (fixture_id, model_version, call_rule);
 	END IF;
 END $$;
+
+-- edges_btts is the BTTS market's edges: append-only, same as edges, and
+-- keyed the same final shape edges only reached after two migrations above -
+-- (fixture_id, computed_at, model_version) - since this table starts fresh
+-- rather than growing into it. Two outcomes (yes/no), not three, is the only
+-- real difference from edges.
+CREATE TABLE IF NOT EXISTS edges_btts (
+	fixture_id    BIGINT NOT NULL REFERENCES fixtures(fixture_id),
+	computed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+	model_yes     NUMERIC NOT NULL,
+	model_no      NUMERIC NOT NULL,
+	market_yes    NUMERIC NOT NULL,
+	market_no     NUMERIC NOT NULL,
+	edge_yes      NUMERIC NOT NULL,
+	edge_no       NUMERIC NOT NULL,
+	flagged       BOOLEAN NOT NULL,
+	yes_price     NUMERIC,
+	no_price      NUMERIC,
+	model_version TEXT NOT NULL,
+	PRIMARY KEY (fixture_id, computed_at, model_version)
+);
+
+-- btts_calls is edges_btts' graded scorecard, prediction_calls' BTTS sibling -
+-- same (fixture_id, model_version, call_rule) key prediction_calls only
+-- reached after its own call_rule migration above, started here directly.
+-- actual_btts is read straight off fixtures.home_goals/away_goals
+-- (backtest/grade_calls.py), not off the categorical result column
+-- prediction_calls uses, since "home_win/draw/away_win" doesn't carry
+-- whether either side was shut out.
+CREATE TABLE IF NOT EXISTS btts_calls (
+	fixture_id         BIGINT NOT NULL REFERENCES fixtures(fixture_id),
+	edge_computed_at   TIMESTAMPTZ NOT NULL,
+	call_rule          TEXT NOT NULL,
+	call_side          TEXT NOT NULL CHECK (call_side IN ('yes', 'no')),
+	model_prob         NUMERIC NOT NULL,
+	market_prob        NUMERIC NOT NULL,
+	edge               NUMERIC NOT NULL,
+	price              NUMERIC,
+	actual_btts        BOOLEAN NOT NULL,
+	correct            BOOLEAN NOT NULL,
+	brier_score        NUMERIC NOT NULL,
+	market_brier_score NUMERIC NOT NULL,
+	staked_units       NUMERIC NOT NULL DEFAULT 1,
+	pnl_units          NUMERIC,
+	flagged            BOOLEAN NOT NULL,
+	ever_flagged       BOOLEAN NOT NULL,
+	model_version      TEXT NOT NULL,
+	graded_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (fixture_id, model_version, call_rule),
+	FOREIGN KEY (fixture_id, edge_computed_at, model_version)
+		REFERENCES edges_btts (fixture_id, computed_at, model_version)
+);
 `
 
 type Store struct {
@@ -467,23 +529,42 @@ func (s *Store) UpsertOdds(ctx context.Context, parsed []odds.ParsedOdds) (int, 
 
 	changed := 0
 	for _, o := range parsed {
+		// btts is NULLed out, not left stale, when this poll's event had no
+		// complete btts market - a missing quote this cycle should not read
+		// as a surviving one from whenever btts was last seen.
+		var bttsCount *int
+		var bttsYes, bttsNo, impliedYes, impliedNo *float64
+		if o.HasBTTS {
+			bttsCount = &o.BTTSBookmakerCount
+			bttsYes, bttsNo = &o.BTTSYesPrice, &o.BTTSNoPrice
+			impliedYes, impliedNo = &o.ImpliedBTTSYes, &o.ImpliedBTTSNo
+		}
+
 		tag, err := tx.Exec(ctx, `
 			INSERT INTO odds (
 				fixture_id, bookmaker_count, home_price, draw_price, away_price,
-				implied_home, implied_draw, implied_away
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+				implied_home, implied_draw, implied_away,
+				btts_bookmaker_count, btts_yes_price, btts_no_price,
+				implied_btts_yes, implied_btts_no
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 			ON CONFLICT (fixture_id) DO UPDATE SET
-				bookmaker_count = EXCLUDED.bookmaker_count,
-				home_price      = EXCLUDED.home_price,
-				draw_price      = EXCLUDED.draw_price,
-				away_price      = EXCLUDED.away_price,
-				implied_home    = EXCLUDED.implied_home,
-				implied_draw    = EXCLUDED.implied_draw,
-				implied_away    = EXCLUDED.implied_away,
-				fetched_at      = now()
+				bookmaker_count      = EXCLUDED.bookmaker_count,
+				home_price           = EXCLUDED.home_price,
+				draw_price           = EXCLUDED.draw_price,
+				away_price           = EXCLUDED.away_price,
+				implied_home         = EXCLUDED.implied_home,
+				implied_draw         = EXCLUDED.implied_draw,
+				implied_away         = EXCLUDED.implied_away,
+				btts_bookmaker_count = EXCLUDED.btts_bookmaker_count,
+				btts_yes_price       = EXCLUDED.btts_yes_price,
+				btts_no_price        = EXCLUDED.btts_no_price,
+				implied_btts_yes     = EXCLUDED.implied_btts_yes,
+				implied_btts_no      = EXCLUDED.implied_btts_no,
+				fetched_at           = now()
 		`,
 			o.FixtureID, o.BookmakerCount, o.HomePrice, o.DrawPrice, o.AwayPrice,
 			o.ImpliedHome, o.ImpliedDraw, o.ImpliedAway,
+			bttsCount, bttsYes, bttsNo, impliedYes, impliedNo,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("upserting odds for fixture %d: %w", o.FixtureID, err)

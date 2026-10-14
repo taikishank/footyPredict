@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, model_comparison, ratings_state, served
-from app.config import SERVED_MODEL_VERSION
+from app import db, main, model_btts, model_comparison, ratings_state, served
+from app.config import SERVED_BTTS_MODEL_VERSION, SERVED_MODEL_VERSION
 from app.features import MatchFeatures, NotEnoughHistoryError
 
 #: What ratings_state reports to /health when the served model needs it. Only
@@ -63,6 +63,12 @@ def _no_real_startup(monkeypatch):
     monkeypatch.setattr(served.MODULE, "load_model", lambda: None)
     monkeypatch.setattr(served.MODULE, "is_loaded", lambda: True)
     monkeypatch.setattr(served.MODULE, "model_version", lambda: "test-model@1")
+    # BTTS is a second, optional model (app/model_btts.py) with the same
+    # "may genuinely exist on disk" problem - defaulted off here so most
+    # tests don't have to know db.get_odds()'s btts_* columns exist. Tests
+    # that care about BTTS flip is_loaded back on themselves.
+    monkeypatch.setattr(model_btts, "load_model", lambda: None)
+    monkeypatch.setattr(model_btts, "is_loaded", lambda: False)
     # A model whose input is more than a Postgres query (v3's replayed ratings)
     # also needs its state stubbed, or served.load() reads the real archive.
     if served.NEEDS_RATINGS:
@@ -88,6 +94,7 @@ def test_health(client):
         "status": "ok",
         "model_version": "test-model@1",
         "ratings": RATINGS_SUMMARY if served.NEEDS_RATINGS else None,
+        "btts_model_loaded": False,
     }
 
 
@@ -356,6 +363,89 @@ def test_list_upcoming_fixtures_merges_odds_and_flags_edge(client, monkeypatch):
         "model_probs": {"home_win": 0.6, "draw": 0.25, "away_win": 0.15},
         "model_version": SERVED_MODEL_VERSION,
     }
+
+
+def test_list_upcoming_fixtures_merges_btts_odds_and_flags_edge(client, monkeypatch):
+    """_market_and_edge's test above, for the BTTS sibling - a second,
+    independent market on the same fixture, gated on model_btts.is_loaded()
+    rather than on whether the 1X2 edge was computed."""
+    monkeypatch.setattr(model_btts, "is_loaded", lambda: True)
+    monkeypatch.setattr(model_btts, "predict_proba", lambda vector: {"yes": 0.6, "no": 0.4})
+
+    monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
+    monkeypatch.setattr(main, "build_match_features", lambda fixture_id: match_features())
+    monkeypatch.setattr(
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+    )
+    monkeypatch.setattr(
+        db,
+        "get_odds",
+        lambda fixture_id: {
+            "implied_home": 0.5, "implied_draw": 0.28, "implied_away": 0.22,
+            "home_price": 2.0, "draw_price": 3.6, "away_price": 4.5,
+            "implied_btts_yes": 0.45, "implied_btts_no": 0.55,
+            "btts_yes_price": 2.1, "btts_no_price": 1.9,
+        },
+    )
+    monkeypatch.setattr(db, "insert_edge", lambda *a, **k: None)
+    inserted = {}
+    monkeypatch.setattr(
+        db,
+        "insert_btts_edge",
+        lambda fixture_id, model_yes, model_no, market_yes, market_no, edge_yes, edge_no,
+               flagged, yes_price, no_price, model_version: inserted.update(
+            fixture_id=fixture_id, flagged=flagged, model_version=model_version,
+            edge_yes=edge_yes,
+        ),
+    )
+
+    resp = client.get("/fixtures/upcoming")
+    assert resp.status_code == 200
+    fx = resp.json()["fixtures"][0]
+
+    assert fx["btts_probabilities"] == {"yes": 0.6, "no": 0.4}
+    assert fx["btts_market"] == {"yes": 0.45, "no": 0.55}
+    assert fx["btts_edge"]["yes"] == pytest.approx(0.15)
+    # |0.15| >= EDGE_FLAG_THRESHOLD (0.05 default).
+    assert fx["btts_flagged"] is True
+    assert inserted == {
+        "fixture_id": 123, "flagged": True,
+        "model_version": SERVED_BTTS_MODEL_VERSION, "edge_yes": pytest.approx(0.15),
+    }
+
+
+def test_list_upcoming_fixtures_omits_btts_without_a_btts_quote(client, monkeypatch):
+    """implied_btts_yes is None (no bookmaker quoted it on the last poll)
+    even though the h2h columns are present - btts fields must stay None,
+    not raise on a missing key."""
+    monkeypatch.setattr(model_btts, "is_loaded", lambda: True)
+    monkeypatch.setattr(model_btts, "predict_proba", lambda vector: {"yes": 0.6, "no": 0.4})
+
+    monkeypatch.setattr(db, "list_upcoming_fixtures", lambda start, end: [FIXTURE])
+    monkeypatch.setattr(main, "build_match_features", lambda fixture_id: match_features())
+    monkeypatch.setattr(
+        served.MODULE, "predict_proba", lambda vector: {"home_win": 0.6, "draw": 0.25, "away_win": 0.15}
+    )
+    monkeypatch.setattr(
+        db,
+        "get_odds",
+        lambda fixture_id: {
+            "implied_home": 0.5, "implied_draw": 0.28, "implied_away": 0.22,
+            "home_price": 2.0, "draw_price": 3.6, "away_price": 4.5,
+            "implied_btts_yes": None, "implied_btts_no": None,
+            "btts_yes_price": None, "btts_no_price": None,
+        },
+    )
+    monkeypatch.setattr(db, "insert_edge", lambda *a, **k: None)
+
+    resp = client.get("/fixtures/upcoming")
+    assert resp.status_code == 200
+    fx = resp.json()["fixtures"][0]
+
+    assert fx["btts_probabilities"] == {"yes": 0.6, "no": 0.4}
+    assert fx["btts_market"] is None
+    assert fx["btts_edge"] is None
+    assert fx["btts_flagged"] is False
 
 
 def test_get_model_comparison(client, monkeypatch):

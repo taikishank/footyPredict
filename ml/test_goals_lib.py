@@ -124,6 +124,36 @@ def test_negative_rho_moves_mass_into_low_scoring_draws():
     assert gl.outcome_probs([1.4], [1.1], rho=-0.13)[0, 1] > gl.outcome_probs([1.4], [1.1])[0, 1]
 
 
+def test_btts_prob_matches_brute_force_matrix_sum():
+    """btts_prob's inclusion-exclusion shortcut against summing the cells it
+    is shorthand for: every cell where both sides scored."""
+    lam, mu, rho = 1.5, 1.2, -0.1
+    matrix = gl.score_matrix([lam], [mu], rho)[0]
+    assert gl.btts_prob([lam], [mu], rho)[0] == pytest.approx(matrix[1:, 1:].sum())
+
+
+def test_btts_prob_rho_zero_matches_independent_poisson():
+    """Under independence, BTTS is just two complementary events."""
+    lam, mu = 1.53, 1.18
+    expected = (1 - poisson(0, lam)) * (1 - poisson(0, mu))
+    assert gl.btts_prob([lam], [mu])[0] == pytest.approx(expected, rel=1e-6)
+
+
+def test_btts_prob_is_bounded():
+    probs = gl.btts_prob([0.3, 1.5, 4.0], [0.2, 1.1, 3.5], rho=-0.1)
+    assert ((probs >= 0) & (probs <= 1)).all()
+
+
+def test_negative_rho_raises_btts_prob():
+    """tau moves mass into 1-1 (BTTS) and out of 1-0/0-1 (not BTTS) while
+    barely touching either marginal - the same mechanism
+    test_negative_rho_moves_mass_into_low_scoring_draws reads off the draw
+    probability, read here off BTTS instead."""
+    plain = gl.btts_prob([1.4], [1.1])[0]
+    corrected = gl.btts_prob([1.4], [1.1], rho=-0.13)[0]
+    assert corrected > plain
+
+
 def test_correction_barely_moves_the_marginals():
     """tau redistributes between four adjacent cells rather than changing how
     many goals are expected - so the fitted rates stay interpretable as goal

@@ -50,6 +50,13 @@ class OddsRow(TypedDict):
     home_price: float
     draw_price: float
     away_price: float
+    # btts is a second, independent market on the same fixture - None when
+    # this fixture's odds row predates btts or no bookmaker quoted it on the
+    # last poll (see ingestor-go/internal/store/postgres.go's odds table).
+    implied_btts_yes: float | None
+    implied_btts_no: float | None
+    btts_yes_price: float | None
+    btts_no_price: float | None
 
 
 def get_fixture(fixture_id: int) -> FixtureRow | None:
@@ -291,7 +298,9 @@ def get_odds(fixture_id: int) -> OddsRow | None:
         cur.execute(
             """
             SELECT implied_home, implied_draw, implied_away,
-                   home_price, draw_price, away_price
+                   home_price, draw_price, away_price,
+                   implied_btts_yes, implied_btts_no,
+                   btts_yes_price, btts_no_price
             FROM odds
             WHERE fixture_id = %s
             """,
@@ -301,12 +310,16 @@ def get_odds(fixture_id: int) -> OddsRow | None:
         if row is None:
             return None
         # Postgres NUMERIC comes back as decimal.Decimal, which can't be
-        # mixed with the plain floats model.predict_proba() returns.
+        # mixed with the plain floats model.predict_proba() returns. The
+        # btts columns are nullable (no quote on the last poll), unlike the
+        # h2h ones, so None passes through rather than being cast.
         keys = (
             "implied_home", "implied_draw", "implied_away",
             "home_price", "draw_price", "away_price",
+            "implied_btts_yes", "implied_btts_no",
+            "btts_yes_price", "btts_no_price",
         )
-        return dict(zip(keys, (float(v) for v in row)))  # type: ignore[return-value]
+        return dict(zip(keys, (None if v is None else float(v) for v in row)))  # type: ignore[return-value]
 
 
 def insert_edge(
@@ -344,6 +357,37 @@ def insert_edge(
                 flagged,
                 prices["home_win"], prices["draw"], prices["away_win"],
                 model_version,
+            ),
+        )
+
+
+def insert_btts_edge(
+    fixture_id: int,
+    model_yes: float,
+    model_no: float,
+    market_yes: float,
+    market_no: float,
+    edge_yes: float,
+    edge_no: float,
+    flagged: bool,
+    yes_price: float,
+    no_price: float,
+    model_version: str,
+) -> None:
+    """insert_edge's BTTS sibling, appending to `edges_btts` instead of
+    `edges` - a different row shape (two outcomes, not three), not a
+    variant of the same insert."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO edges_btts (
+                fixture_id, model_yes, model_no, market_yes, market_no,
+                edge_yes, edge_no, flagged, yes_price, no_price, model_version
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                fixture_id, model_yes, model_no, market_yes, market_no,
+                edge_yes, edge_no, flagged, yes_price, no_price, model_version,
             ),
         )
 

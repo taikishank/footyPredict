@@ -81,6 +81,35 @@ def test_every_rule_always_names_a_side(rule):
     model, market = DRAW_BIAS_MODEL, DRAW_BIAS_MARKET
     assert selection.SINGLE[rule](model, market) in OUT
     assert selection.DOUBLE_CHANCE[rule](model, market) in OUT
+    btts_model = dict(zip(selection.BTTS_OUTCOMES, (0.6, 0.4)))
+    btts_market = dict(zip(selection.BTTS_OUTCOMES, (0.5, 0.5)))
+    assert selection.BTTS[rule](btts_model, btts_market) in selection.BTTS_OUTCOMES
+
+
+def test_btts_max_edge_picks_the_underpriced_side():
+    model = {"yes": 0.6, "no": 0.4}
+    market = {"yes": 0.5, "no": 0.5}
+    assert selection.BTTS["max_edge"](model, market) == "yes"
+
+
+def test_btts_max_prob_picks_the_model_favourite():
+    model = {"yes": 0.35, "no": 0.65}
+    market = {"yes": 0.5, "no": 0.5}
+    # max_edge would back "no" here too (edge +0.15 vs -0.15), so this market
+    # does not distinguish the two rules - the point is only that max_prob
+    # reads the model and not the market.
+    assert selection.BTTS["max_prob"](model, market) == "no"
+
+
+def test_btts_max_edge_can_never_produce_a_negative_edge():
+    """BTTS's structural twin of test_max_edge_can_never_produce_a_negative_edge:
+    a de-vigged two-outcome market's edges sum to 0 too."""
+    for model in (dict(zip(selection.BTTS_OUTCOMES, (0.6, 0.4))),
+                 dict(zip(selection.BTTS_OUTCOMES, (0.3, 0.7)))):
+        for market in (dict(zip(selection.BTTS_OUTCOMES, (0.5, 0.5))),
+                       dict(zip(selection.BTTS_OUTCOMES, (0.45, 0.55)))):
+            pick = selection.BTTS["max_edge"](model, market)
+            assert model[pick] - market[pick] >= -1e-12
 
 
 def test_dc_max_prob_excludes_the_least_likely_outcome():

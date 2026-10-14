@@ -9,6 +9,15 @@ class Probabilities(BaseModel):
     away_win: float
 
 
+class BTTSProbabilities(BaseModel):
+    """Probabilities' two-outcome twin, for the BTTS market - a separate
+    model class rather than reusing Probabilities with unused fields, since
+    yes/no isn't a special case of home/draw/away."""
+
+    yes: float
+    no: float
+
+
 class PredictionResponse(BaseModel):
     fixture_id: int
     league_id: int
@@ -51,6 +60,15 @@ class UpcomingFixture(BaseModel):
     # condition as `probabilities`.
     probabilities_v2: Probabilities | None = None
     model_version_v2: str | None = None
+    # BTTS is a second, independent model/market on the same fixture (see
+    # app/model_btts.py), not a variant of the 1X2 fields above - all four
+    # are None together whenever the BTTS model isn't loaded or the fixture
+    # has no v3-shaped feature vector to feed it, same condition that leaves
+    # `probabilities` itself None.
+    btts_probabilities: BTTSProbabilities | None = None
+    btts_market: BTTSProbabilities | None = None
+    btts_edge: BTTSProbabilities | None = None
+    btts_flagged: bool = False
 
 
 class UpcomingFixturesResponse(BaseModel):
@@ -67,6 +85,9 @@ class HealthResponse(BaseModel):
     # the trained ones - a count far from the training archive's means the
     # service is reading a different history than ml/ did.
     ratings: dict | None = None
+    # False means /fixtures/upcoming is omitting BTTS fields, not that
+    # anything is broken - see app/model_btts.py's docstring.
+    btts_model_loaded: bool = False
 
 
 class ModelPerformance(BaseModel):
