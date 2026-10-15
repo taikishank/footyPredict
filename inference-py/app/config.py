@@ -112,7 +112,34 @@ SERVED_MODEL_VERSION = os.environ.get("SERVED_MODEL_VERSION", "v3")
 # model_v3.model_version(): a retrain should not start a new bucket, and
 # backtest/grade_calls.py's --model default has to be something an operator
 # can type without looking up a timestamp first.
-SERVED_BTTS_MODEL_VERSION = os.environ.get("SERVED_BTTS_MODEL_VERSION", "btts-v1")
+#
+# Bumped to -blend when app/dc_state.py started feeding a classifier/Poisson
+# blend rather than the bare classifier (ml/btts_ablate_v2.py: +0.00075 log
+# loss over the classifier alone, CI excludes zero) - a different prediction
+# deserves its own bucket, the same reason v2->v3 did.
+SERVED_BTTS_MODEL_VERSION = os.environ.get("SERVED_BTTS_MODEL_VERSION", "btts-v1-blend")
+
+# The Dixon-Coles arm app/dc_state.py replays to feed the Poisson half of the
+# blend - build_goals_features.py's DIAGNOSTIC_ARM, the one `classifier` has
+# actually been measured against, not ml/btts_ablate_v2.py's swept h730/c7
+# (a marginal, not-significant improvement over this arm that costs 2.5x the
+# replay time - not worth it for a null result).
+DC_HALF_LIFE = float(os.environ.get("DC_HALF_LIFE", "365.0"))
+DC_CADENCE = float(os.environ.get("DC_CADENCE", "30.0"))
+
+# Weight on the classifier in the BTTS blend; (1 - this) on the Poisson arm.
+# 0.7 per ml/btts_ablate_v2.py's rolling-origin sweep over {0.5, 0.6, 0.7,
+# 0.8} - the point estimate peaks near 0.6-0.7 and 0.7 is the value measured
+# against both the tuned and the untouched classifier/poisson pair.
+BTTS_BLEND_WEIGHT = float(os.environ.get("BTTS_BLEND_WEIGHT", "0.7"))
+
+# How long a replayed Dixon-Coles state may serve before app/dc_state.py
+# rebuilds it in the background. The replay costs ~29s over the whole
+# archive (vs ratings_state.py's 0.4s for atkdef - Dixon-Coles refits on a
+# cadence, atkdef is one online pass) - too slow to pay inline on a request
+# the way RATINGS_REFRESH_SECONDS does, so this drives a dedicated background
+# thread instead. 0 disables refreshing (useful in tests).
+DC_REFRESH_SECONDS = float(os.environ.get("DC_REFRESH_SECONDS", "3600"))
 
 # Angular dev server origins allowed to call this API cross-origin (see
 # app.ts's `ng serve` / environment.ts's apiBaseUrl). Comma-separated;

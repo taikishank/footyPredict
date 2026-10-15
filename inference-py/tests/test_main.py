@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, model_btts, model_comparison, ratings_state, served
+from app import dc_state, db, main, model_btts, model_comparison, ratings_state, served
 from app.config import SERVED_BTTS_MODEL_VERSION, SERVED_MODEL_VERSION
 from app.features import MatchFeatures, NotEnoughHistoryError
 
@@ -69,6 +69,16 @@ def _no_real_startup(monkeypatch):
     # that care about BTTS flip is_loaded back on themselves.
     monkeypatch.setattr(model_btts, "load_model", lambda: None)
     monkeypatch.setattr(model_btts, "is_loaded", lambda: False)
+    # app/dc_state.py's replay reads the same real archive on its own
+    # background thread; stub the thread-starter so tests don't spawn one
+    # against a db pool that was just stubbed out above. btts_probability is
+    # stubbed too, and not just is_loaded: its module-level _params dict is
+    # a real cache that tests/test_dc_state.py populates with a real replay,
+    # and without this stub a test here would silently read whatever state
+    # that file's tests left behind depending on run order.
+    monkeypatch.setattr(dc_state, "start_background_refresh", lambda: None)
+    monkeypatch.setattr(dc_state, "is_loaded", lambda: False)
+    monkeypatch.setattr(dc_state, "btts_probability", lambda league_id, home_id, away_id: None)
     # A model whose input is more than a Postgres query (v3's replayed ratings)
     # also needs its state stubbed, or served.load() reads the real archive.
     if served.NEEDS_RATINGS:
@@ -95,6 +105,7 @@ def test_health(client):
         "model_version": "test-model@1",
         "ratings": RATINGS_SUMMARY if served.NEEDS_RATINGS else None,
         "btts_model_loaded": False,
+        "dc_state": None,
     }
 
 

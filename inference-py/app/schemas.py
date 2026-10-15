@@ -88,6 +88,11 @@ class HealthResponse(BaseModel):
     # False means /fixtures/upcoming is omitting BTTS fields, not that
     # anything is broken - see app/model_btts.py's docstring.
     btts_model_loaded: bool = False
+    # Present once app/dc_state.py has replayed. None means BTTS is serving
+    # the classifier alone (predict_proba_blended's fallback), not that
+    # anything is broken - a fresh league with no completed fixtures yet
+    # leaves this unset the same way ratings_state's n_results would read 0.
+    dc_state: dict | None = None
 
 
 class ModelPerformance(BaseModel):

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db, model_btts, model_comparison, ratings_state, served
+from app import dc_state, db, model_btts, model_comparison, ratings_state, served
 from app.config import (
     CORS_ALLOWED_ORIGINS,
     EDGE_FLAG_THRESHOLD,
@@ -62,6 +62,13 @@ async def lifespan(app: FastAPI):
     # is a second, optional prediction rather than a candidate for
     # SERVED_MODEL_VERSION's slot.
     model_btts.load_model()
+    # Best-effort for the same reason, but unlike model_btts.load_model()
+    # this one is never awaited: the replay itself is ~76s on this
+    # interpreter (app/dc_state.py's module docstring), so the first replay
+    # runs on its own background thread rather than lifespan blocking
+    # startup on it. The blend falls back to the classifier alone
+    # (app/model_btts.predict_proba_blended) until that first replay lands.
+    dc_state.start_background_refresh()
     yield
     db.pool.close()
 
@@ -83,6 +90,7 @@ def health() -> HealthResponse:
         model_version=served.model_version() if served.is_loaded() else None,
         ratings=ratings_state.state_summary() if ratings_state.is_loaded() else None,
         btts_model_loaded=model_btts.is_loaded(),
+        dc_state=dc_state.state_summary() if dc_state.is_loaded() else None,
     )
 
 
@@ -154,7 +162,10 @@ def list_upcoming_fixtures() -> UpcomingFixturesResponse:
         btts_probs = btts_market = btts_edge = None
         btts_flagged = False
         if model_btts.is_loaded() and features.v3_vector is not None:
-            btts_probs = model_btts.predict_proba(features.v3_vector)
+            btts_probs = model_btts.predict_proba_blended(
+                features.v3_vector, features.fixture["league_id"],
+                features.fixture["home_id"], features.fixture["away_id"],
+            )
             btts_market, btts_edge, btts_flagged = _btts_market_and_edge(
                 features.fixture["fixture_id"], btts_probs
             )

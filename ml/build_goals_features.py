@@ -110,6 +110,73 @@ def arm_columns(half_life: float, cadence: float) -> list[str]:
     return [f"{arm_name(half_life, cadence)}_{field}" for field in FIELDS]
 
 
+def _walk_league(dates: np.ndarray, home: np.ndarray, away: np.ndarray,
+                 hg: np.ndarray, ag: np.ndarray, half_life: float,
+                 cadence: float) -> tuple[np.ndarray, np.ndarray,
+                                          "gl.LeagueParams | None", "np.datetime64"]:
+    """One league's forward walk: per-fixture (lam, mu, p_home, p_draw,
+    p_away) and (rho, hfa), plus the final fitted LeagueParams.
+
+    Factored out of replay_arm() so app/dc_state.py's live serving can reuse
+    the exact same refit-window arithmetic rather than re-deriving it - two
+    independent implementations of "how many days back does the weight
+    floor allow" drift from each other in the low bits, and this project has
+    already paid once for a training/serving divergence
+    (ml/FINDINGS_SCOPE.md's form window).
+
+    `dates` must be in date order, with no timezone (naive, same instant as
+    whatever the caller's own date column uses) - a tz-aware vs naive
+    mismatch shifts every day-difference computed against it.
+    """
+    n = len(dates)
+    values = np.empty((n, len(FIELDS)))
+    league_level = np.empty((n, 2))
+
+    max_age = half_life * np.log2(1.0 / gl.WEIGHT_FLOOR)
+    day = np.timedelta64(1, "D")
+
+    params: gl.LeagueParams | None = None
+    next_refit = dates[0]
+
+    for i in range(n):
+        today = dates[i]
+        if today >= next_refit:
+            # Strictly before today, and no older than the weight floor
+            # allows. `left` is the first match still carrying weight;
+            # `right` is the first match this fit is not allowed to see.
+            right = int(np.searchsorted(dates, today, side="left"))
+            left = int(np.searchsorted(dates, today - max_age * day, side="left"))
+            if right - left >= 2:
+                window = {
+                    "days_ago": (today - dates[left:right]) / day,
+                    "home_id": home[left:right],
+                    "away_id": away[left:right],
+                    "home_goals": hg[left:right],
+                    "away_goals": ag[left:right],
+                }
+                params = gl.fit_league(window, half_life, warm=params)
+            # The schedule advances whether or not there was enough history
+            # to fit on, so a league's opening weeks do not queue up a
+            # refit per fixture.
+            next_refit = today + cadence * day
+
+        if params is None:
+            # Before any fit exists, both clubs are unknown and the model
+            # is the league-average fixture. Emitted rather than left NaN
+            # so the join stays inner and every arm covers the same rows.
+            lam = float(np.exp(gl.INIT_HFA))
+            mu = 1.0
+        else:
+            lam, mu = params.rates(int(home[i]), int(away[i]))
+        rho = params.rho if params is not None else 0.0
+        hfa = params.hfa if params is not None else gl.INIT_HFA
+        probs = gl.outcome_probs([lam], [mu], rho)[0]
+        values[i] = (lam, mu, *probs)
+        league_level[i] = (rho, hfa)
+
+    return values, league_level, params, next_refit
+
+
 def replay_arm(index: pd.DataFrame, half_life: float, cadence: float) -> np.ndarray:
     """Pre-match (lam, mu, p_home, p_draw, p_away) for every fixture, in the
     row order of `index`.
@@ -123,57 +190,69 @@ def replay_arm(index: pd.DataFrame, half_life: float, cadence: float) -> np.ndar
     # diagnostic arm can emit them without a second pass.
     league_level = np.full((len(index), 2), np.nan)
 
+    for league_id, league in index.groupby("league_id", sort=False):
+        positions = league.index.to_numpy()
+        values, ll, _, _ = _walk_league(
+            league["date"].to_numpy(), league["home_id"].to_numpy(),
+            league["away_id"].to_numpy(), league["home_goals"].to_numpy(dtype=float),
+            league["away_goals"].to_numpy(dtype=float), half_life, cadence,
+        )
+        out[positions] = values
+        league_level[positions] = ll
+
+    return out, league_level
+
+
+def final_params(index: pd.DataFrame, half_life: float, cadence: float,
+                 as_of=None) -> dict:
+    """The fitted gl.LeagueParams per league that is correct *as of now*,
+    for app/dc_state.py's live serving - replaying `index` (completed
+    fixtures only) is not enough on its own, because time-weighting means
+    the passage of calendar time changes a league's fit even with zero new
+    results: _walk_league()'s refit check is triggered by a row's own date
+    crossing `next_refit`, and if no fixture has been played since that
+    crossing, "last completed fixture" and "right now" disagree about
+    whether a refit is due.
+
+    `as_of` (a tz-naive timestamp, same convention as `index["date"]`) is
+    that missing trigger: one virtual row dated `as_of` with no result, so
+    a league whose next_refit has already passed gets reweighted against
+    today's actual age-of-evidence before any upcoming fixture reads it.
+    Omitting `as_of` reproduces replay_arm()'s own final state exactly -
+    what ml/btts_ablate_v2.py's offline measurement used, and what the
+    train/serve equivalence test in tests/test_dc_state.py checks against.
+
+    A league with fewer than two matches within the weight floor at every
+    refit point (no fit ever happened) is absent rather than carrying an
+    all-default LeagueParams.
+    """
     max_age = half_life * np.log2(1.0 / gl.WEIGHT_FLOOR)
     day = np.timedelta64(1, "D")
 
+    out = {}
     for league_id, league in index.groupby("league_id", sort=False):
         dates = league["date"].to_numpy()
         home = league["home_id"].to_numpy()
         away = league["away_id"].to_numpy()
         hg = league["home_goals"].to_numpy(dtype=float)
         ag = league["away_goals"].to_numpy(dtype=float)
-        positions = league.index.to_numpy()
 
-        params: gl.LeagueParams | None = None
-        next_refit = dates[0]
+        _, _, params, next_refit = _walk_league(dates, home, away, hg, ag, half_life, cadence)
 
-        for i in range(len(league)):
-            today = dates[i]
-            if today >= next_refit:
-                # Strictly before today, and no older than the weight floor
-                # allows. `left` is the first match still carrying weight;
-                # `right` is the first match this fit is not allowed to see.
-                right = int(np.searchsorted(dates, today, side="left"))
-                left = int(np.searchsorted(dates, today - max_age * day, side="left"))
-                if right - left >= 2:
-                    window = {
-                        "days_ago": (today - dates[left:right]) / day,
-                        "home_id": home[left:right],
-                        "away_id": away[left:right],
-                        "home_goals": hg[left:right],
-                        "away_goals": ag[left:right],
-                    }
-                    params = gl.fit_league(window, half_life, warm=params)
-                # The schedule advances whether or not there was enough
-                # history to fit on, so a league's opening weeks do not queue
-                # up a refit per fixture.
-                next_refit = today + cadence * day
+        if as_of is not None and np.datetime64(as_of) >= next_refit:
+            right = len(dates)  # every completed fixture is before as_of
+            left = int(np.searchsorted(dates, np.datetime64(as_of) - max_age * day, side="left"))
+            if right - left >= 2:
+                window = {
+                    "days_ago": (np.datetime64(as_of) - dates[left:right]) / day,
+                    "home_id": home[left:right], "away_id": away[left:right],
+                    "home_goals": hg[left:right], "away_goals": ag[left:right],
+                }
+                params = gl.fit_league(window, half_life, warm=params)
 
-            if params is None:
-                # Before any fit exists, both clubs are unknown and the model
-                # is the league-average fixture. Emitted rather than left NaN
-                # so the join stays inner and every arm covers the same rows.
-                lam = float(np.exp(gl.INIT_HFA))
-                mu = 1.0
-            else:
-                lam, mu = params.rates(int(home[i]), int(away[i]))
-            rho = params.rho if params is not None else 0.0
-            hfa = params.hfa if params is not None else gl.INIT_HFA
-            probs = gl.outcome_probs([lam], [mu], rho)[0]
-            out[positions[i]] = (lam, mu, *probs)
-            league_level[positions[i]] = (rho, hfa)
-
-    return out, league_level
+        if params is not None:
+            out[int(league_id)] = params
+    return out
 
 
 def build(index: pd.DataFrame) -> tuple[pd.DataFrame, dict]:

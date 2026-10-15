@@ -10,6 +10,15 @@ prediction surfaced alongside whichever 1X2 model SERVED_MODEL_VERSION
 names, not a candidate to replace it, so its absence should not take the
 app down. /fixtures/upcoming just omits the BTTS fields for every fixture
 until ml/train_btts.py has been run and the artifact exists.
+
+predict_proba_blended() is what /fixtures/upcoming actually calls:
+ml/btts_ablate_v2.py found a classifier-only prediction and a classifier/
+Dixon-Coles blend to be "close substitutes" individually, but blending them
+70/30 clears a bar neither arm cleared alone (+0.00075 log loss over the
+classifier, 95% CI excludes zero). predict_proba() stays as the classifier-
+only building block - app/dc_state.py's Poisson half can be unavailable (a
+league with no completed fixtures yet) in a way the classifier never is,
+and the blend needs to fall back cleanly when that happens.
 """
 from __future__ import annotations
 
@@ -18,7 +27,13 @@ import logging
 import numpy as np
 from xgboost import XGBClassifier
 
-from app.config import MODEL_BTTS_LOCAL_PATH, MODEL_BTTS_S3_KEY, S3_BUCKET_MODELS
+from app import dc_state
+from app.config import (
+    BTTS_BLEND_WEIGHT,
+    MODEL_BTTS_LOCAL_PATH,
+    MODEL_BTTS_S3_KEY,
+    S3_BUCKET_MODELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,4 +89,19 @@ def predict_proba(vector: np.ndarray) -> dict[str, float]:
     if _model is None:
         raise RuntimeError("BTTS model not loaded - call load_model() first")
     yes = float(_model.predict_proba(vector)[0, 1])
+    return {"yes": yes, "no": 1.0 - yes}
+
+
+def predict_proba_blended(vector: np.ndarray, league_id: int, home_id: int,
+                          away_id: int) -> dict[str, float]:
+    """BTTS_BLEND_WEIGHT on the classifier, the rest on app/dc_state.py's
+    Dixon-Coles arm - or the classifier alone when that arm has no fit for
+    this league yet (dc_state.btts_probability returns None), which is the
+    same gap a brand-new league leaves in app/ratings_state.py's replay."""
+    classifier_yes = predict_proba(vector)["yes"]
+    poisson_yes = dc_state.btts_probability(league_id, home_id, away_id)
+    if poisson_yes is None:
+        yes = classifier_yes
+    else:
+        yes = BTTS_BLEND_WEIGHT * classifier_yes + (1 - BTTS_BLEND_WEIGHT) * poisson_yes
     return {"yes": yes, "no": 1.0 - yes}
