@@ -71,7 +71,7 @@ def test_per_league_losses_come_back_in_validation_order(monkeypatch):
     y = np.zeros(8, dtype=int)
     train_idx, val_idx = np.arange(4), np.array([5, 4, 7, 6])
 
-    def stub(frame, cols, labels, train, val):
+    def stub(frame, cols, labels, train, val, params=None):
         assert set(frame["league_id"].to_numpy()[train]) == \
             {frame["league_id"].to_numpy()[val][0]}, "trained on another league"
         return val.astype(float)

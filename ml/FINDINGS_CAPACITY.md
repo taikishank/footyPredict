@@ -242,29 +242,99 @@ columns against `ratings.csv` to 1e-9, and `tests/test_served.py` feeds the real
 
 ---
 
+## 6. The three leftover items, closed
+
+Open items 1-3 below were all re-measured at the depth-2 recipe
+(`ml/tune.py --model v3t --grid lr2`, `ml/league_ablate.py --recipe v3`,
+`ml/window_ablate.py --recipe v3`, `ml/tune.py --model v2 --grid cap2`). All
+three come back the way §3's over-capacity reading predicts.
+
+**`learning_rate` at depth 2 sits on a flat ridge with `n_estimators`, and
+the ridge has a real but tiny ceiling.** The first grid (`lr2`, learning_rate
+x n_estimators around the served 0.0072/800) found the served rate best on
+average of the four tried, with the single best point
+(`lr=0.003, n=3200`, 0.98284) at +0.00031 [-0.00022, +0.00084] — inside
+noise. But that point needed 4x the served rounds to get there, which is the
+same "pinned at an edge" shape `reg`->`reg2` and `cap`->`cap2` both hit, so
+four more grids chased it rather than stopping on the first null:
+
+| grid | axes | points | best vs served |
+|---|---|---|---|
+| `lr2` | lr x n_est, around served | 16 | +0.00031 [-0.00022, +0.00084] |
+| `joint3` | depth x lr x n_est | 27 | +0.00040 [+0.00011, +0.00070]* |
+| `lr3` | lr 0.001-0.003 x n_est 2400-6400 | 16 | +0.00040 (same point as `joint3`) |
+| `lr4` | lr 0.0005/0.001 x n_est 8000/12800 | 4 | +0.00038 [-0.00000, +0.00075] |
+| `lr5` | lr 0.0005 x n_est 20000 | 1 | +0.00025 [-0.00032, +0.00082] |
+
+(*first point that actually clears zero, at `max_depth=2, lr=0.003, n=2400`.)
+
+`lr3` is the grid that settles it: for every learning rate from 0.0015 to
+0.003, log loss falls then rises as `n_estimators` grows — three independent
+interior peaks, all landing within +0.0003-0.0004 of the served recipe.
+`lr4`/`lr5` chased the one rate (0.001, then 0.0005) still rising at its
+edge, out to 20,000 rounds, and it turns over at the same ceiling rather than
+past it. 64 grid points across five sweeps all point at one conclusion: lower
+learning rate and more rounds is not a different, better model, it is a
+slower route to the same ~+0.0004 plateau the served recipe is already one
+or two grid points away from. Depth is the only axis that moved anything by
+an order of magnitude (+0.0017-0.0020); this one is real but too small to
+retune for on its own.
+
+**The two depth-4 placebos both die at depth 2, as predicted.**
+`league_ablate.py`'s random-partition placebo, which bought +0.00074
+[+0.00034, +0.00113] at the served depth-4 recipe, is +0.00005
+[-0.00018, +0.00028] at depth 2 — a flat null. Every other league arm
+(`id`, `onehot`, `character`, `interact`) is likewise null at depth 2, and
+`per_league` is actively worse (-0.00430 [-0.00556, -0.00303]). The window
+sweep's `g38_s8` arm, +0.00040 at depth 4, is +0.00008 [-0.00019, +0.00035]
+at depth 2 — also a flat null; the long-window arm `w38` is still a loss
+(-0.00103 [-0.00167, -0.00042]). Both of the project's two independent
+"v3 can't reach its own interactions" leads are now dead under the recipe
+that answered the question they were raised about.
+
+**v2 is confirmed mis-tuned the way v3 was, by a comparable margin.**
+`--grid cap2` against v2's served (depth-4, unregularized) recipe finds
+`max_depth=2, reg_lambda=100, n_estimators=2400` at +0.00476
+[+0.00296, +0.00656], P=1.000 — a real, significant gain, on the same order
+as the +0.0017-0.0020 the v3 retune bought. It is not actionable today:
+`SERVED_MODEL_VERSION` defaults to `v3` (open item 6 below is itself stale —
+the promotion already happened), so v2's tuning only matters if the service
+is ever rolled back to it. Filed for that case rather than acted on now.
+
+Reproduce with:
+
+```
+./inference-py/bin/python ml/tune.py --model v3t --grid lr2 --mode rolling
+./inference-py/bin/python ml/tune.py --model v3t --grid joint3 --mode rolling
+./inference-py/bin/python ml/tune.py --model v3t --grid lr3 --mode rolling
+./inference-py/bin/python ml/tune.py --model v3t --grid lr4 --mode rolling
+./inference-py/bin/python ml/tune.py --model v3t --grid lr5 --mode rolling
+./inference-py/bin/python ml/league_ablate.py --mode rolling --recipe v3
+./inference-py/bin/python ml/window_ablate.py --mode rolling --recipe v3
+./inference-py/bin/python ml/tune.py --model v2 --grid cap2 --mode rolling
+```
+
+Run these sequentially, one at a time — not launched in parallel with `&`.
+This box has 4 CPU cores and each fit uses all of them by default; four
+jobs at once oversubscribes to a load average of ~16 and makes every job
+10-50x slower from contention instead of finishing sooner (see `CLAUDE.md`).
+
+---
+
 ## Open items
 
-1. **The depth-2 recipe is v3's, not the project's.** Applying it to the
-   56-column scope table costs ~0.0022. Every re-pricing here was done on the
-   63-column table for that reason, and `--recipe v3` should not be pointed at
-   a v2-shaped arm without expecting it. The corollary is that v1 and v2 are
-   now mis-tuned in the same way v3 was, and `ml/tune.py --model v2 --grid cap2`
-   would say by how much — relevant because `train.py`'s incumbent is still
-   what the service serves.
+1. ~~The depth-2 recipe is v3's, not the project's.~~ **Closed above.** v1/v2's
+   mis-tuning is now quantified (+0.00476 for v2) but not actionable while
+   `SERVED_MODEL_VERSION=v3`.
 
-2. **`learning_rate` has never been swept at depth 2.** It was fixed at 0.0072
-   by `--grid core` on v2's columns at depth 4, and held through `cap` and
-   `cap2`. Depth and learning rate trade off the same way depth and
-   `n_estimators` do, and `cap2` already showed that axis is live (`d1` needed
-   2400 rounds to match `d2`'s 800). The grid is cheap now that fits cost 25
-   seconds instead of two minutes.
+2. ~~`learning_rate` has never been swept at depth 2.~~ **Closed above.**
+   It sits on a flat lr x n_estimators ridge that plateaus at +0.0003-0.0004
+   over the served recipe — real, confirmed across five grids and 64 points,
+   and too small to retune for on its own.
 
-3. **Three arms are still priced at depth 4.** The `g38_s8` window arm
-   (+0.00040), the league interact arm (+0.00052) and the random-partition
-   placebo (+0.00074) have not been re-run. The last of these matters most: it
-   is the *other* placebo, §3 predicts it dies too, and `league_ablate.py` has
-   not yet been given the `--recipe` flag the other three ablations have.
-   Given how §5 went, the prior on any sub-0.0005 finding surviving is low.
+3. ~~Three arms are still priced at depth 4.~~ **Closed above.** All three
+   (`g38_s8`, league `interact`, league `placebo`) are flat nulls at depth 2;
+   the under-capacity reading is dead everywhere it was raised.
 
 4. **11% of same-recipe seed pairs clear the 95% bar.** Every paired bootstrap
    in this project resamples fixtures and holds the fit fixed, so it prices

@@ -57,9 +57,18 @@ real caveat for per_league only: a model with a fifth of the rows probably
 wants a shallower tree. A null there is "not at this tuning", and the arm is
 cheap enough to re-run if the pooled arms make it worth the grid.
 
+--recipe re-prices every arm at train_v3's retuned capacity
+(FINDINGS_CAPACITY.md open item 3). `placebo` is the one that matters most
+here: it is the other random-partition noise injection that cleared zero
+against the depth-4 recipe (open item 1 of this file), and
+`FINDINGS_CAPACITY.md` already showed the matching placebo in
+`cap_runoff.py` dies at depth 2. This is the direct check on whether this
+one does too.
+
 Run:
     ./inference-py/bin/python ml/league_ablate.py --mode split
     ./inference-py/bin/python ml/league_ablate.py --mode rolling
+    ./inference-py/bin/python ml/league_ablate.py --mode rolling --recipe v3
 """
 from __future__ import annotations
 
@@ -71,6 +80,7 @@ import pandas as pd
 
 import rating_ablate as ra
 import train_v2 as tv2
+import train_v3 as tv3
 from league_lib import LeagueCharacter, build_character, league_dummies
 from ratings_lib import ARMS
 
@@ -159,7 +169,8 @@ ARMS_ORDER = [BASELINE, "id", "onehot", "character", "interact", "placebo",
 
 
 def fit_and_score_per_league(df: pd.DataFrame, cols: list[str], y: np.ndarray,
-                             train_idx: np.ndarray, val_idx: np.ndarray) -> np.ndarray:
+                             train_idx: np.ndarray, val_idx: np.ndarray,
+                             params: dict | None = None) -> np.ndarray:
     """One model per league, scored back into val_idx's own order.
 
     The order matters more than it looks: every other arm returns losses in
@@ -181,7 +192,7 @@ def fit_and_score_per_league(df: pd.DataFrame, cols: list[str], y: np.ndarray,
                 f"league {value} has {len(seats)} validation fixtures and no "
                 "training rows in this fold"
             )
-        losses[seats] = ra.fit_and_score(df, cols, y, train, val_idx[seats])
+        losses[seats] = ra.fit_and_score(df, cols, y, train, val_idx[seats], params)
     assert not np.isnan(losses).any(), "a validation fixture went unscored"
     return losses
 
@@ -189,14 +200,20 @@ def fit_and_score_per_league(df: pd.DataFrame, cols: list[str], y: np.ndarray,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("split", "rolling"), default="split")
+    parser.add_argument("--recipe", choices=sorted(tv3.RECIPES), default="v2",
+                        help="which fit to measure every arm at (default: v2, "
+                             "the recipe FINDINGS_LEAGUE.md was written from)")
     args = parser.parse_args()
 
-    cache = FEATURES_DIR / f"league_losses_{args.mode}.npz"
+    params = tv3.RECIPES[args.recipe]
+    suffix = "" if args.recipe == "v2" else f"_{args.recipe}"
+    cache = FEATURES_DIR / f"league_losses_{args.mode}{suffix}.npz"
     df, baseline, dummies, placebo = load()
     y = df["result"].map(tv2.LABEL_MAP).to_numpy()
     plan = ra.folds(len(df), args.mode)
     print(f"mode={args.mode}, {len(plan)} fold(s), "
-          f"{sum(len(v) for _, v in plan)} validation fixtures total\n")
+          f"{sum(len(v) for _, v in plan)} validation fixtures total")
+    print(f"recipe={args.recipe}: {params}\n")
 
     results = {}
     if cache.exists():
@@ -209,7 +226,7 @@ def main() -> None:
             continue
         cols = arm_columns(name, baseline, dummies, placebo)
         fit = fit_and_score_per_league if name == PER_LEAGUE else ra.fit_and_score
-        losses = np.concatenate([fit(df, cols, y, tr, va) for tr, va in plan])
+        losses = np.concatenate([fit(df, cols, y, tr, va, params) for tr, va in plan])
         results[name] = losses
         label = f"{len(cols)} cols" + (" x 5 models" if name == PER_LEAGUE else "")
         print(f"  fitted {name:12s} ({label})  log loss {losses.mean():.5f}")

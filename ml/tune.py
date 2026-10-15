@@ -72,6 +72,7 @@ from xgboost import XGBClassifier  # noqa: E402
 
 import rating_ablate as ra  # noqa: E402
 import train_v2 as tv2  # noqa: E402
+import train_v3 as tv3  # noqa: E402
 
 FEATURES_PATH = Path(__file__).parent / "data" / "features" / "2000_window3_8.csv"
 MLFLOW_TRACKING_DIR = Path(__file__).parent / "mlruns"
@@ -102,6 +103,19 @@ BASELINE = {"n_estimators": 800, "max_depth": 4, "learning_rate": 0.0072}
 # reads as a finding.
 SERVED_V3 = {**BASELINE, "reg_lambda": tv2.REG_LAMBDA, "subsample": tv2.SUBSAMPLE}
 
+# v3's *retuned* recipe (train_v3.PARAMS: max_depth=2, reg_lambda=30), the one
+# actually served since FINDINGS_CAPACITY.md. Distinct from SERVED_V3 above,
+# which stays untouched because `cap`/`cap2`/`reg`/`reg2` were measured against
+# it and re-pointing it would silently change what those published deltas mean.
+# A sweep run after the retune (e.g. `lr2`) should start here instead.
+TUNED_V3 = tv3.PARAMS
+
+# Same model as "v3" - same experiment, same rating columns from
+# rating_ablate's join - at the post-retune baseline instead of the pre-retune
+# one. Kept as a separate key rather than mutating "v3"["baseline"] for the
+# same reason TUNED_V3 is a separate constant: old grids stay reproducible
+# against the reference they were actually run against.
+#
 # Which experiment each sweep lands in, matching the training script that owns
 # the model, so a sweep sits alongside that model's own runs rather than in a
 # third place. The extra v2 columns are named here rather than in the grids
@@ -120,6 +134,11 @@ MODELS = {
         "experiment": "liveedge-match-outcome-v3",
         "extra_cols": [],
         "baseline": SERVED_V3,
+    },
+    "v3t": {
+        "experiment": "liveedge-match-outcome-v3",
+        "extra_cols": [],
+        "baseline": TUNED_V3,
     },
 }
 
@@ -188,6 +207,64 @@ GRIDS = {
         "reg_lambda": [10, 30, 100],
         "n_estimators": [800, 2400],
     },
+    # FINDINGS_CAPACITY.md open item 2: learning_rate has never been swept at
+    # depth 2. It was fixed at 0.0072 by `core` on v2's columns at depth 4 and
+    # held through `cap` and `cap2` unquestioned. Paired with n_estimators for
+    # the same reason `cap2` paired depth with it - a shallower, faster-learning
+    # tree wants fewer rounds to reach the same capacity, and the two are not
+    # separable. Centred on the served 0.0072/800 and bracketing it on both
+    # axes. Run against --model v3t (TUNED_V3, depth 2), not v2's baseline.
+    "lr2": {
+        "learning_rate": [0.003, 0.0072, 0.015, 0.03],
+        "n_estimators": [400, 800, 1600, 3200],
+    },
+    # `cap`/`cap2` swept depth at the old learning rate; `lr2` swept learning
+    # rate x n_estimators at the depth those grids picked. Neither rules out a
+    # learning rate that only pays off at a different depth, because each
+    # sweep fixed the axis the other one was answering. This is the joint
+    # check: depth x learning_rate x n_estimators together, reg_lambda held at
+    # the served 30 (cap2 already found it interior, not worth a 4th axis
+    # here). Run against --model v3t.
+    "joint3": {
+        "max_depth": [1, 2, 3],
+        "learning_rate": [0.003, 0.0072, 0.015],
+        "n_estimators": [800, 1600, 2400],
+    },
+    # `joint3`'s winner (depth=2, lr=0.003, n=2400, +0.00040 [+0.00011,
+    # +0.00070] over the served recipe) pinned at the low edge of
+    # learning_rate and the high edge of n_estimators - depth was the only
+    # interior axis. The same shape `reg`->`reg2` and `cap`->`cap2` hit, and
+    # both times the grid needed to move before the optimum, not just the
+    # point estimate, stopped moving. Depth held at 2 (already bracketed
+    # 1-8 across `cap`/`cap2`/`joint3` and never wanted to move); this
+    # extends the other two axes past where they pinned, with 0.003/2400
+    # kept as the overlapping corner so a reproduced number there is a
+    # sanity check on the two runs rather than a new measurement.
+    "lr3": {
+        "learning_rate": [0.001, 0.0015, 0.002, 0.003],
+        "n_estimators": [2400, 3200, 4800, 6400],
+    },
+    # `lr3`'s surface turned over for three of its four learning rates -
+    # 0.0015, 0.002 and 0.003 each peak then decline by n_estimators=6400, all
+    # landing within +0.0003-0.0004 of the served recipe, which reads as one
+    # ridge (lr x n_estimators trading off for the same effective capacity)
+    # rather than a lead that keeps growing. The exception is 0.001, still
+    # rising at the grid's edge. This checks whether it tops out at the same
+    # ceiling or finds something past it, bracketing lower on learning_rate
+    # too since nothing below 0.001 has been tried in either direction.
+    "lr4": {
+        "learning_rate": [0.0005, 0.001],
+        "n_estimators": [8000, 12800],
+    },
+    # lr4's only cell still rising at its edge: 0.0005 was -0.00155 at 8000
+    # rounds and +0.00024 at 12800, while every other learning rate tried
+    # (0.0015 through 0.0072) already turned over at the same ~+0.0004
+    # ceiling. One more point to check whether 0.0005 turns over there too
+    # or needs still more rounds to converge.
+    "lr5": {
+        "learning_rate": [0.0005],
+        "n_estimators": [20000],
+    },
 }
 
 # Fixed so a rerun of the same config reproduces. The training scripts leave
@@ -217,7 +294,7 @@ def load_table(model: str) -> tuple[pd.DataFrame, list[str]]:
     set is what lets a v3 sweep's baseline point be checked against the
     published 0.98497 instead of taken on trust.
     """
-    if model == "v3":
+    if model in ("v3", "v3t"):
         df, base_cols = ra.load()
         return df, base_cols + ra.ARM_COLUMNS["atkdef"]
 

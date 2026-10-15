@@ -35,10 +35,17 @@ smoother feature and might prefer a different depth or learning rate, so a
 null result here is "8 is not wrong *at this tuning*", not "the horizon is
 worthless" - see FINDINGS_WINDOW.md.
 
+--recipe re-prices an arm at train_v3's retuned capacity (FINDINGS_CAPACITY.md
+open item 3): g38_s8 was published at the depth-4 recipe that phase later
+showed was over-fit, and this is the smoother feature `tune.py:259`'s own
+caveat points at, so it is the one arm most likely to read differently at
+depth 2.
+
 Run:
     ./inference-py/bin/python ml/build_window_features.py      # ~8 min, once
     ./inference-py/bin/python ml/window_ablate.py --mode split
     ./inference-py/bin/python ml/window_ablate.py --mode rolling
+    ./inference-py/bin/python ml/window_ablate.py --mode rolling --recipe v3
 """
 from __future__ import annotations
 
@@ -50,6 +57,7 @@ import pandas as pd
 
 import rating_ablate as ra
 import train_v2 as tv2
+import train_v3 as tv3
 from build_window_features import WINDOWS
 from feature_lib import FORM_FIELD_ORDER
 from ratings_lib import ARMS
@@ -117,14 +125,20 @@ def load() -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("split", "rolling"), default="split")
+    parser.add_argument("--recipe", choices=sorted(tv3.RECIPES), default="v2",
+                        help="which fit to measure every arm at (default: v2, "
+                             "the recipe FINDINGS_WINDOW.md was written from)")
     args = parser.parse_args()
 
-    cache = SWEEP_DIR / f"window_losses_{args.mode}.npz"
+    params = tv3.RECIPES[args.recipe]
+    suffix = "" if args.recipe == "v2" else f"_{args.recipe}"
+    cache = SWEEP_DIR / f"window_losses_{args.mode}{suffix}.npz"
     df = load()
     y = df["result"].map(tv2.LABEL_MAP).to_numpy()
     plan = ra.folds(len(df), args.mode)
     print(f"mode={args.mode}, {len(plan)} fold(s), "
-          f"{sum(len(v) for _, v in plan)} validation fixtures total\n")
+          f"{sum(len(v) for _, v in plan)} validation fixtures total")
+    print(f"recipe={args.recipe}: {params}\n")
 
     results = {}
     if cache.exists():
@@ -137,7 +151,7 @@ def main() -> None:
             continue
         cols = arm_columns(name)
         losses = np.concatenate(
-            [ra.fit_and_score(df, cols, y, tr, va) for tr, va in plan]
+            [ra.fit_and_score(df, cols, y, tr, va, params) for tr, va in plan]
         )
         results[name] = losses
         print(f"  fitted {name:12s} ({len(cols)} cols)  log loss {losses.mean():.5f}")
