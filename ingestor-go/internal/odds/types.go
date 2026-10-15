@@ -18,8 +18,13 @@ var leagueSportKeys = map[int64]string{
 	564: "soccer_spain_la_liga",
 }
 
-// Event is a single fixture's odds as returned by The Odds API's
-// /v4/sports/{sport}/odds endpoint (regions=eu, markets=h2h,btts).
+// Event is a single fixture's odds. The h2h side comes from The Odds API's
+// bulk /v4/sports/{sport}/odds endpoint (regions=eu, markets=h2h); btts
+// comes from a second, per-event call to
+// /v4/sports/{sport}/events/{eventId}/odds (regions=eu, markets=btts) - see
+// client.go's FetchOdds/FetchEventBTTS for why they're split. Both decode
+// into this same struct shape, so service.go merges a matched h2h Event's
+// Bookmakers with its btts Event's Bookmakers before parseEvent reads either.
 type Event struct {
 	ID           string      `json:"id"`
 	SportKey     string      `json:"sport_key"`

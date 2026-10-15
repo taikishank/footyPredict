@@ -8,6 +8,7 @@ import (
 
 type OddsFetcher interface {
 	FetchOdds(ctx context.Context, sportKey string) ([]Event, error)
+	FetchEventBTTS(ctx context.Context, sportKey, eventID string) (Event, error)
 }
 
 type FixtureLookup interface {
@@ -85,6 +86,17 @@ func (s *Service) runCycle(ctx context.Context) {
 					"sport_key", sportKey, "home_team", event.HomeTeam, "away_team", event.AwayTeam)
 				continue
 			}
+
+			// btts is a per-event call (see client.go's FetchEventBTTS) made
+			// only for events already matched to a tracked fixture, never for
+			// every candidate - one failed/empty btts lookup doesn't lose the
+			// h2h side, it just leaves this fixture's btts fields unset.
+			if bttsEvent, err := s.fetcher.FetchEventBTTS(ctx, sportKey, event.ID); err != nil {
+				s.logger.Warn("fetching btts odds", "sport_key", sportKey, "fixture_id", fixtureID, "error", err)
+			} else {
+				event.Bookmakers = append(event.Bookmakers, bttsEvent.Bookmakers...)
+			}
+
 			po, ok := parseEvent(fixtureID, event)
 			if !ok {
 				s.logger.Warn("odds event has no complete h2h market", "fixture_id", fixtureID)
