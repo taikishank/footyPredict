@@ -815,6 +815,133 @@ def print_overlap(cur, window: Window) -> None:
     )
 
 
+#: "Main pick": one wager per fixture, not two. The truth table over
+#: (single staked, DC staked):
+#:
+#:   single staked, DC not staked   -> single
+#:   single not staked, DC staked   -> single
+#:   single staked,     DC staked   -> DC
+#:   single not staked, DC not staked -> single
+#:
+#: which collapses to one rule: bet the single pick, UNLESS both legs clear
+#: the edge gate at once, in which case bet the double chance instead. A lone
+#: DC edge with no single edge is not enough to switch - the DC leg only
+#: overrides the default when the single leg agrees that this fixture is
+#: worth staking at all. This is exhaustive over every covered fixture, not a
+#: slice of them: every fixture lands in exactly one of the four rows, so
+#: main pick is a bet on 100% of the covered book, same denominator as
+#: print_overlap's "all covered fixtures" row.
+def _main_pick_is_dc(window: Window) -> str:
+    p_stake = _rebind(stake_predicate(), "p")
+    d_stake = _rebind(stake_predicate(), "d")
+    return f"({p_stake}) AND ({d_stake})"
+
+
+@dataclass(frozen=True)
+class MainPickStats:
+    """The one-wager-per-fixture record under the main-pick rule. n/hits/pnl/
+    staked describe whichever leg main pick actually bet on each fixture -
+    1 unit per fixture, never two. The two Brier pairs are each leg's OWN
+    calibration against the market over the same fixtures regardless of
+    which leg was picked, kept from the old combo section as a standing
+    calibration check on both legs side by side."""
+
+    n: int
+    hits: int
+    pnl: float | None
+    staked: float
+    single_brier: float
+    single_market_brier: float
+    dc_brier: float
+    dc_market_brier: float
+
+
+def _main_pick_stats(cur, window: Window) -> MainPickStats | None:
+    """One round trip for the main-pick row. `is_dc` selects which leg's own
+    columns (pnl_units, staked_units, correct) count for a given fixture;
+    the CASE expressions are the whole rule, so hits/pnl/staked can never
+    drift from the predicate that decided which leg was bet."""
+    is_dc = _main_pick_is_dc(window)
+    pick_pnl = f"CASE WHEN {is_dc} THEN d.pnl_units ELSE p.pnl_units END"
+    pick_staked = f"CASE WHEN {is_dc} THEN d.staked_units ELSE p.staked_units END"
+    pick_correct = f"CASE WHEN {is_dc} THEN d.correct ELSE p.correct END"
+    priced = (f"CASE WHEN {is_dc} THEN d.pnl_units ELSE p.pnl_units END "
+              f"IS NOT NULL")
+    cur.execute(
+        f"""
+        SELECT count(*),
+               count(*) FILTER (WHERE {pick_correct}),
+               sum({pick_pnl}) FILTER (WHERE {priced}),
+               sum({pick_staked}) FILTER (WHERE {priced}),
+               avg(p.brier_score)::float,
+               avg(p.market_brier_score)::float,
+               avg(d.brier_score)::float,
+               avg(d.market_brier_score)::float
+        {_OVERLAP_FROM}
+        WHERE {_COVERED} AND ({_rebind(window.sql, "p")})
+        """,
+        window.params,
+    )
+    (n, hits, pnl, staked, single_brier, single_market_brier,
+     dc_brier, dc_market_brier) = cur.fetchone()
+    if not n:
+        return None
+    return MainPickStats(
+        n=n,
+        hits=hits,
+        pnl=None if pnl is None else float(pnl),
+        staked=0.0 if staked is None else float(staked),
+        single_brier=float(single_brier),
+        single_market_brier=float(single_market_brier),
+        dc_brier=float(dc_brier),
+        dc_market_brier=float(dc_market_brier),
+    )
+
+
+def print_main_pick(cur, window: Window) -> None:
+    """One wager per fixture: bet the single pick by default, switch to the
+    double chance only when both legs clear the edge gate at once. See
+    _main_pick_is_dc for the truth table this collapses from.
+
+    Same four stats the old single-below-gate/DC-staked combo section
+    printed - hit rate, P&L, ROI, Brier vs market - because the question is
+    the same shape: is this combined rule better than either leg alone.
+    Still two Brier columns, not one: main pick bets only one leg per
+    fixture, but both legs' calibration against the market stays worth
+    watching side by side regardless of which one got staked.
+    """
+    print("\n=== main pick: single pick, switching to the double chance "
+          "when both legs are staked ===")
+    stats = _main_pick_stats(cur, window)
+    if stats is None:
+        print(f"no covered fixtures in this window ({window.label})")
+        return
+
+    roi = stats.pnl / stats.staked if stats.pnl is not None and stats.staked else None
+    row = [
+        f"{stats.hits}/{stats.n} ({stats.hits / stats.n:.1%})",
+        _ABSENT if stats.pnl is None else f"{stats.pnl:+.2f}u",
+        _ABSENT if roi is None else f"{roi:+.1%}",
+        f"{stats.single_brier:.4f} vs {stats.single_market_brier:.4f}",
+        f"{stats.dc_brier:.4f} vs {stats.dc_market_brier:.4f}",
+    ]
+    _render_table(
+        ["hit rate", "P&L", "ROI", "single Brier vs market", "DC Brier vs market"],
+        [row],
+    )
+    print(
+        "Hit rate, P&L and ROI are over whichever single leg main pick "
+        "staked that\nfixture - 1 unit per fixture, never two: the single "
+        "pick by default, the\ndouble chance only on fixtures where both "
+        "legs cleared the edge gate at\nonce. n is every covered fixture "
+        f"({stats.n}), since the rule names a bet on\nall of them, not a "
+        "gated subset. The two Brier columns are each leg's own\n"
+        "calibration against the market on these fixtures regardless of "
+        "which one\nwas picked - a standing comparison of the two legs' "
+        "probabilities, not a\nstatement about main pick's own accuracy."
+    )
+
+
 def _print_no_coverage() -> None:
     """Zero coverage is not a bug either: it is the signature of the v1 rows,
     graded before the arms were split, when the DC bet was defined as the pair
@@ -973,6 +1100,7 @@ def print_report(
         for call_table in _CALL_TABLES:
             print_summary(cur, call_table, scoped)
         print_overlap(cur, scoped)
+        print_main_pick(cur, scoped)
 
 
 def print_full_report(
