@@ -16,6 +16,28 @@
       &mdash; neither is "the" pick yet.
     </p>
 
+    <div class="mt-6 flex flex-wrap gap-2" role="radiogroup" aria-label="Filter by league">
+      @for (league of leagues; track league.id) {
+        <label
+          class="cursor-pointer rounded-full border px-3 py-1.5 text-xs font-medium transition"
+          [class]="
+            selectedLeague() === league.id
+              ? 'border-amber-600 bg-amber-950/40 text-amber-300'
+              : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+          "
+        >
+          <input
+            type="radio"
+            name="league-filter"
+            class="sr-only"
+            [checked]="selectedLeague() === league.id"
+            (change)="selectLeague(league.id)"
+          />
+          {{ league.label }}
+        </label>
+      }
+    </div>
+
     @if (fixturesService.status() === 'loading') {
       <p class="mt-8 text-sm text-slate-500">Loading fixtures&hellip;</p>
     }
@@ -24,13 +46,13 @@
       <p class="mt-6 rounded-md bg-rose-950 px-3 py-2 text-sm text-rose-300">{{ message }}</p>
     }
 
-    @if (fixturesService.status() === 'loaded' && fixturesService.fixtures().length === 0) {
+    @if (fixturesService.status() === 'loaded' && filteredFixtures().length === 0) {
       <p class="mt-8 text-sm text-slate-500">No fixtures in the next few days.</p>
     }
 
-    @if (fixturesService.fixtures().length > 0) {
+    @if (filteredFixtures().length > 0) {
       <div class="mt-6 space-y-4">
-        @for (fx of fixturesService.fixtures(); track fx.fixture_id) {
+        @for (fx of filteredFixtures(); track fx.fixture_id) {
           <div
             class="rounded-lg border border-slate-800 bg-slate-950/40 p-5"
             [class.border-amber-600]="pickMaxEdge(fx)?.flagged"
@@ -58,20 +80,6 @@
                 <div class="mt-0.5 text-xs text-slate-500">{{ ruleDescription('max_edge') }}</div>
 
                 @if (fx.probabilities_v2; as probs) {
-                  <dl class="mt-3 space-y-1.5 text-sm">
-                    <div class="flex justify-between">
-                      <dt class="text-slate-500">Home win</dt>
-                      <dd class="text-slate-200">{{ probs.home_win * 100 | number: '1.0-0' }}%</dd>
-                    </div>
-                    <div class="flex justify-between">
-                      <dt class="text-slate-500">Draw</dt>
-                      <dd class="text-slate-200">{{ probs.draw * 100 | number: '1.0-0' }}%</dd>
-                    </div>
-                    <div class="flex justify-between">
-                      <dt class="text-slate-500">Away win</dt>
-                      <dd class="text-slate-200">{{ probs.away_win * 100 | number: '1.0-0' }}%</dd>
-                    </div>
-                  </dl>
 
                   @if (pickMaxEdge(fx); as pick) {
                     <div
@@ -239,6 +247,87 @@
                 }
               </div>
             </div>
+
+            @if (fx.btts_probabilities) {
+              <div class="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+                <div class="text-sm font-medium text-slate-300">Both teams to score</div>
+                <div class="mt-1 text-xs text-slate-500">
+                  a second, independent market/model on the same fixture
+                </div>
+
+                <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <div class="font-mono text-[10px] uppercase tracking-wider text-amber-500/80">
+                      max_edge
+                    </div>
+                    @if (bttsPickMaxEdge(fx); as pick) {
+                      <div
+                        class="mt-1.5 rounded-md border px-3 py-2 text-xs"
+                        [class]="
+                          pick.flagged
+                            ? 'border-amber-700 bg-amber-950/30 text-amber-300'
+                            : 'border-slate-800 bg-slate-900/40 text-slate-400'
+                        "
+                      >
+                        <div class="flex items-center justify-between gap-2">
+                          <span>
+                            @if (pick.vsMarket; as vs) {
+                              Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}% vs
+                              market {{ vs.marketProb * 100 | number: '1.0-0' }}%, edge
+                              {{ vs.edge * 100 | number: '1.0-0' }}pp)
+                            } @else {
+                              Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}%, no market to compare)
+                            }
+                          </span>
+                          <span
+                            class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                            [class]="confidenceBadgeClass(pick.confidence.level)"
+                          >
+                            {{ pick.confidence.level }}
+                            &middot; {{ pick.modelProb * 100 | number: '1.1-1' }}%
+                          </span>
+                        </div>
+                      </div>
+                    }
+                  </div>
+
+                  <div>
+                    <div class="font-mono text-[10px] uppercase tracking-wider text-sky-500/80">
+                      max_prob
+                    </div>
+                    @if (bttsPickMaxProb(fx); as pick) {
+                      <div
+                        class="mt-1.5 rounded-md border px-3 py-2 text-xs"
+                        [class]="
+                          pick.flagged
+                            ? 'border-sky-700 bg-sky-950/30 text-sky-300'
+                            : 'border-slate-800 bg-slate-900/40 text-slate-400'
+                        "
+                      >
+                        <div class="flex items-center justify-between gap-2">
+                          <span>
+                            @if (pick.vsMarket; as vs) {
+                              Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}% vs
+                              market {{ vs.marketProb * 100 | number: '1.0-0' }}%, edge
+                              {{ vs.edge * 100 | number: '1.0-0' }}pp)
+                            } @else {
+                              Pick: {{ pick.label }} ({{ pick.modelProb * 100 | number: '1.0-0' }}%, no market to compare)
+                            }
+                          </span>
+                          <span
+                            class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide"
+                            [class]="confidenceBadgeClass(pick.confidence.level)"
+                          >
+                            {{ pick.confidence.level }}
+                            &middot; {{ pick.modelProb * 100 | number: '1.1-1' }}%
+                          </span>
+                        </div>
+                      </div>
+                    }
+                  </div>
+                </div>
+              </div>
+            }
           </div>
         }
       </div>

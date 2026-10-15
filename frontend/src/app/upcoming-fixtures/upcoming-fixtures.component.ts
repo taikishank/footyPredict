@@ -1,13 +1,23 @@
-import { ChangeDetectionStrategy, Component, OnInit, inject, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, OnInit, computed, inject, output, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 
 import { UpcomingFixturesService } from './upcoming-fixtures.service';
-import type { UpcomingFixture } from './upcoming-fixture.model';
+import type { BTTSProbabilities, UpcomingFixture } from './upcoming-fixture.model';
 import type { Probabilities } from '../live-prediction/live-prediction.model';
 
 type Outcome = 'home_win' | 'draw' | 'away_win';
+type BTTSOutcome = 'yes' | 'no';
 
 const OUTCOMES: Outcome[] = ['home_win', 'draw', 'away_win'];
+const BTTS_OUTCOMES: BTTSOutcome[] = ['yes', 'no'];
+
+// Leads with Yes/No - the term bettors actually call this market by - rather
+// than just the descriptive phrase, so the pick line names a side the same
+// way the moneyline picks name "Home win"/"Draw"/"Away win".
+const BTTS_OUTCOME_LABEL: Record<BTTSOutcome, string> = {
+  yes: 'Yes (both teams to score)',
+  no: 'No (not both teams to score)',
+};
 
 const OUTCOME_LABEL: Record<Outcome, string> = {
   home_win: 'Home win',
@@ -117,6 +127,22 @@ const CONFIDENCE_HIGH_MIN = 0.65;
 // backtest/report.py draws between `flagged` and its stake segment.
 const EDGE_FLAG_THRESHOLD = 0.05;
 
+export interface LeagueFilter {
+  // null selects every league. Mirrors backtest/league_report.py's
+  // _LEAGUES - fx.league_id carries no name, only this numeric id.
+  id: number | null;
+  label: string;
+}
+
+const LEAGUE_FILTERS: LeagueFilter[] = [
+  { id: null, label: 'All' },
+  { id: 8, label: 'Premier League' },
+  { id: 564, label: 'La Liga' },
+  { id: 384, label: 'Serie A' },
+  { id: 82, label: 'Bundesliga' },
+  { id: 301, label: 'Ligue 1' },
+];
+
 @Component({
   selector: 'app-upcoming-fixtures',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -130,8 +156,23 @@ export class UpcomingFixturesComponent implements OnInit {
   // with it (see PROJECT_SPEC.md Phase 4: "hand off to the Live tab").
   readonly watchLive = output<number>();
 
+  protected readonly leagues = LEAGUE_FILTERS;
+  // Defaults to "All" (null) on every load, per PROJECT_SPEC - not persisted
+  // across visits.
+  protected readonly selectedLeague = signal<number | null>(null);
+
+  protected readonly filteredFixtures = computed(() => {
+    const leagueId = this.selectedLeague();
+    const fixtures = this.fixturesService.fixtures();
+    return leagueId === null ? fixtures : fixtures.filter((fx) => fx.league_id === leagueId);
+  });
+
   ngOnInit(): void {
     void this.fixturesService.load();
+  }
+
+  protected selectLeague(id: number | null): void {
+    this.selectedLeague.set(id);
   }
 
   protected watch(fixtureId: number): void {
@@ -177,6 +218,49 @@ export class UpcomingFixturesComponent implements OnInit {
 
   protected ruleDescription(rule: CallRule): string {
     return CALL_RULE_DESCRIPTION[rule];
+  }
+
+  // BTTS's own max_edge/max_prob picks, mirroring backtest/selection.py's
+  // BTTS dict (_max_edge_btts/_max_prob_btts) - a native two-outcome pick
+  // over ("yes", "no"), not the 1X2 rules forced down to two. Null whenever
+  // the BTTS model hasn't loaded or this fixture has no v3-shaped feature
+  // vector, same condition that leaves btts_probabilities null.
+  protected bttsPickMaxEdge(fx: UpcomingFixture): ModelPick | null {
+    return this.bttsPick(fx, 'max_edge');
+  }
+
+  protected bttsPickMaxProb(fx: UpcomingFixture): ModelPick | null {
+    return this.bttsPick(fx, 'max_prob');
+  }
+
+  private bttsPick(fx: UpcomingFixture, rule: CallRule): ModelPick | null {
+    const probs = fx.btts_probabilities;
+    if (!probs) return null;
+    const side = this.bttsCallSide(probs, fx.btts_market, rule);
+    return this.pickFrom(
+      rule,
+      BTTS_OUTCOME_LABEL[side],
+      probs[side],
+      fx.btts_market === null ? null : fx.btts_market[side],
+      // A two-outcome bet's no-information baseline is a coin flip.
+      1 / 2,
+      null,
+    );
+  }
+
+  // Largest-signed-edge side where there's a market to compare against, else
+  // the likelier side - callSide's BTTS twin, over BTTS_OUTCOMES instead of
+  // OUTCOMES.
+  private bttsCallSide(
+    probs: BTTSProbabilities,
+    market: BTTSProbabilities | null,
+    rule: CallRule,
+  ): BTTSOutcome {
+    if (rule === 'max_prob' || market === null) {
+      return BTTS_OUTCOMES.reduce((best, o) => (probs[o] > probs[best] ? o : best));
+    }
+    const edge = (o: BTTSOutcome) => probs[o] - market[o];
+    return BTTS_OUTCOMES.reduce((best, o) => (edge(o) > edge(best) ? o : best));
   }
 
   private singlePick(fx: UpcomingFixture, rule: CallRule): ModelPick | null {
